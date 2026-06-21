@@ -115,7 +115,7 @@ export default function SubmitPage() {
               View Library
             </Link>
             <button
-              onClick={() => { setSubmitted(false); setUrl(''); setFile(null); setStartTime(''); setEndTime('') }}
+              onClick={() => { setSubmitted(false); setUrl(''); setFile(null); setStartMin(''); setStartSec(''); setEndMin(''); setEndSec('') }}
               className="text-sm border border-white/20 px-5 py-2.5 rounded-full hover:border-white/40 transition text-white/50"
             >
               Submit another

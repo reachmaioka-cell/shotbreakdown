@@ -128,11 +128,11 @@ export default async function ShotPage({ params }: { params: Promise<{ id: strin
                 )}
 
                 {/* Recreation steps */}
-                {steps?.length > 0 && (
+                {(steps?.length ?? 0) > 0 && (
                   <section>
                     <h2 className="text-sm text-white/30 uppercase tracking-widest mb-4">How to Recreate</h2>
                     <div className="border border-white/10 rounded-xl p-5 space-y-4">
-                      {steps.map((item) => (
+                      {(steps ?? []).map((item) => (
                         <div key={item.step} className="flex gap-4">
                           <div className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">{item.step}</div>
                           <div>
@@ -150,11 +150,11 @@ export default async function ShotPage({ params }: { params: Promise<{ id: strin
 
           {/* Right sidebar */}
           <div className="space-y-4">
-            {vfx?.length > 0 && (
+            {(vfx?.length ?? 0) > 0 && (
               <div className="border border-white/10 rounded-xl p-5">
                 <h3 className="font-semibold mb-3">VFX</h3>
                 <ul className="text-sm text-white/70 space-y-1.5">
-                  {vfx.map((v, i) => <li key={i}>• {v}</li>)}
+                  {(vfx ?? []).map((v, i) => <li key={i}>• {v}</li>)}
                 </ul>
               </div>
             )}

@@ -84,7 +84,7 @@ ${timeRange}
 Return this exact JSON structure:
 ${jsonSchema}`
 
-  let messageContent: Anthropic.MessageParam['content']
+  let messageContent: Anthropic.MessageParam['content'] = [{ type: 'text', text: textPrompt }]
 
   // Try to get a visual — use thumbnail if YouTube, otherwise text only
   if (shot.platform === 'youtube' && shot.source_url) {
@@ -102,10 +102,6 @@ ${jsonSchema}`
         ]
       }
     }
-  }
-
-  if (!messageContent) {
-    messageContent = [{ type: 'text', text: textPrompt }]
   }
 
   const message = await anthropic.messages.create({

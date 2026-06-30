@@ -54,7 +54,7 @@ export default function UpgradePage() {
 
         <div className="border border-white/10 rounded-2xl p-8 mb-6 text-left">
           <div className="flex items-end gap-2 mb-8">
-            <span className="text-5xl font-bold">$12</span>
+            <span className="text-5xl font-bold">$14.99</span>
             <span className="text-white/40 mb-1.5">/ month</span>
           </div>
 

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import type { User } from '@supabase/supabase-js'
+import type { DiscoveredRelease } from '@/app/api/admin/discover-trending/route'
 
 const ADMIN_EMAIL = 'reachmaioka@gmail.com'
 const TODAY = '2026-07-01'
@@ -28,6 +29,107 @@ type Release = {
   sourceUrl?: string
   isEstimated: boolean
   confirmedSource?: string
+  isFavorite: boolean
+  discovered: boolean
+  verifyNote: string | null
+  researchedAt: number | null  // ms epoch, local-friendly form of researched_at
+}
+
+// ─── SUPABASE ROW MAPPING ──────────────────────────────────────────────────
+
+type ReleaseRow = {
+  id: string
+  title: string
+  artist: string | null
+  type: ReleaseType
+  genre: string
+  category: string
+  release_date: string
+  buzz: number
+  buzz_delta: number | null
+  description: string
+  source_url: string | null
+  confirmed_source: string | null
+  is_estimated: boolean
+  is_favorite: boolean
+  discovered: boolean
+  verify_note: string | null
+  researched_at: string | null
+}
+
+function rowToRelease(row: ReleaseRow): Release {
+  return {
+    id: row.id,
+    title: row.title,
+    artist: row.artist ?? undefined,
+    type: row.type,
+    genre: row.genre,
+    category: row.category,
+    releaseDate: row.release_date,
+    buzz: row.buzz,
+    buzzDelta: row.buzz_delta ?? undefined,
+    description: row.description,
+    sourceUrl: row.source_url ?? undefined,
+    isEstimated: row.is_estimated,
+    confirmedSource: row.confirmed_source ?? undefined,
+    isFavorite: row.is_favorite,
+    discovered: row.discovered,
+    verifyNote: row.verify_note,
+    researchedAt: row.researched_at ? new Date(row.researched_at).getTime() : null,
+  }
+}
+
+function releaseToBootstrapRow(release: SeedRelease): ReleaseRow {
+  return {
+    id: release.id,
+    title: release.title,
+    artist: release.artist ?? null,
+    type: release.type,
+    genre: release.genre,
+    category: release.category,
+    release_date: release.releaseDate,
+    buzz: release.buzz,
+    buzz_delta: release.buzzDelta ?? null,
+    description: release.description,
+    source_url: release.sourceUrl ?? null,
+    confirmed_source: release.confirmedSource ?? null,
+    is_estimated: release.isEstimated,
+    is_favorite: false,
+    discovered: false,
+    verify_note: null,
+    researched_at: null,
+  }
+}
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+}
+
+function candidateToRow(c: DiscoveredRelease, existingIds: Set<string>): ReleaseRow {
+  const base = slugify(c.artist ? `${c.artist}-${c.title}` : c.title) || 'release'
+  let id = base
+  let n = 2
+  while (existingIds.has(id)) { id = `${base}-${n}`; n++ }
+  existingIds.add(id)
+  return {
+    id,
+    title: c.title,
+    artist: c.artist,
+    type: c.type,
+    genre: c.genre,
+    category: c.category,
+    release_date: c.releaseDate,
+    buzz: c.buzz,
+    buzz_delta: c.buzzDelta,
+    description: c.description,
+    source_url: c.sourceUrl,
+    confirmed_source: c.confirmedSource,
+    is_estimated: c.isEstimated,
+    is_favorite: false,
+    discovered: true,
+    verify_note: null,
+    researched_at: null,
+  }
 }
 
 type DrawerShot = {
@@ -67,7 +169,9 @@ function formatAsOf(ts: number): string {
 // Dates marked isEstimated:false are confirmed from reputable sources.
 // isEstimated:true = editorial research / trade publication rumour — subject to change.
 
-const SEED_RELEASES: Release[] = [
+type SeedRelease = Omit<Release, 'isFavorite' | 'discovered' | 'verifyNote' | 'researchedAt'>
+
+const SEED_RELEASES: SeedRelease[] = [
 
   // ── ALREADY RELEASED (shown amber) ──────────────────────────────────────────
 
@@ -974,23 +1078,19 @@ function ClipDrawer({
 
 function DateCell({
   release,
-  dateOverride,
   verifyStatus,
-  verifyNote,
   onDateSave,
   onVerify,
 }: {
   release: Release
-  dateOverride: string | null
   verifyStatus: 'idle' | 'checking' | 'done'
-  verifyNote: string | null
   onDateSave: (id: string, date: string) => void
   onVerify: (release: Release) => void
 }) {
   const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(dateOverride ?? release.releaseDate)
-  const date = dateOverride ?? release.releaseDate
-  const isEstimated = release.isEstimated && !dateOverride
+  const [draft, setDraft] = useState(release.releaseDate)
+  const date = release.releaseDate
+  const isEstimated = release.isEstimated
   const released = date <= TODAY
 
   if (editing) {
@@ -1017,7 +1117,7 @@ function DateCell({
 
   return (
     <div>
-      <button onClick={() => setEditing(true)} className="text-left group">
+      <button onClick={() => { setDraft(date); setEditing(true) }} className="text-left group">
         <span className={`text-xs tabular-nums group-hover:underline underline-offset-2 ${released ? 'text-amber-400/80' : 'text-white/40'}`}>
           {new Date(date + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
         </span>
@@ -1030,13 +1130,13 @@ function DateCell({
             onClick={() => onVerify(release)}
             disabled={verifyStatus === 'checking'}
             className="text-[10px] text-white/20 hover:text-white/50 transition disabled:opacity-30"
-            title={verifyNote ?? 'Final check: search YouTube/web to confirm this hasn\'t actually released yet'}
+            title={release.verifyNote ?? 'Final check: search YouTube/web to confirm this hasn\'t actually released yet'}
           >
             {verifyStatus === 'checking' ? '...' : verifyStatus === 'done' ? '✓ Checked' : '↻ Verify'}
           </button>
         </div>
       )}
-      {release.confirmedSource && !isEstimated && !dateOverride && (
+      {release.confirmedSource && !isEstimated && (
         <a href={release.confirmedSource} target="_blank" rel="noopener noreferrer"
           className="block text-[10px] text-white/15 hover:text-white/40 transition mt-0.5" title="View source">
           ✓ Confirmed
@@ -1048,6 +1148,8 @@ function DateCell({
 
 // ─── MAIN PAGE ────────────────────────────────────────────────────────────────
 
+const MAX_RELEASES = 50
+
 export default function ReleasesPage() {
   const [user, setUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -1056,14 +1158,12 @@ export default function ReleasesPage() {
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [showBuzzInfo, setShowBuzzInfo] = useState(false)
   const [activeRelease, setActiveRelease] = useState<Release | null>(null)
-  const [sourceUrls, setSourceUrls] = useState<Record<string, string>>({})
-  const [dateOverrides, setDateOverrides] = useState<Record<string, string>>({})
+  const [releases, setReleases] = useState<Release[]>([])
+  const [releasesLoading, setReleasesLoading] = useState(true)
   const [verifyStatus, setVerifyStatus] = useState<Record<string, 'idle' | 'checking' | 'done'>>({})
-  const [verifyNotes, setVerifyNotes] = useState<Record<string, string>>({})
-  const [buzzOverrides, setBuzzOverrides] = useState<Record<string, { buzz: number; delta: number | null }>>({})
   const [researchStatus, setResearchStatus] = useState<Record<string, 'idle' | 'checking' | 'done'>>({})
-  const [researchedAt, setResearchedAt] = useState<Record<string, number>>({})
   const [researchingAll, setResearchingAll] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -1072,7 +1172,22 @@ export default function ReleasesPage() {
     })
   }, [])
 
-  const isReleased = (id: string, fallbackDate: string) => (dateOverrides[id] ?? fallbackDate) <= TODAY
+  // Load the persisted release list; bootstrap it from the seed data the
+  // first time the table is empty (fresh DB, or someone cleared it).
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('releases').select('*').order('release_date', { ascending: true })
+      if (data && data.length > 0) {
+        setReleases((data as ReleaseRow[]).map(rowToRelease))
+        setReleasesLoading(false)
+        return
+      }
+      const bootstrapRows = SEED_RELEASES.map(releaseToBootstrapRow)
+      const { data: inserted } = await supabase.from('releases').insert(bootstrapRows).select()
+      setReleases(((inserted as ReleaseRow[] | null) ?? bootstrapRows).map(rowToRelease))
+      setReleasesLoading(false)
+    })()
+  }, [])
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
@@ -1080,8 +1195,23 @@ export default function ReleasesPage() {
   }
 
   const closeDrawer = useCallback(() => setActiveRelease(null), [])
-  const saveSourceUrl = useCallback((id: string, url: string) => setSourceUrls(prev => ({ ...prev, [id]: url.trim() })), [])
-  const saveDateOverride = useCallback((id: string, date: string) => setDateOverrides(prev => ({ ...prev, [id]: date })), [])
+
+  const saveSourceUrl = useCallback(async (id: string, url: string) => {
+    const trimmed = url.trim()
+    setReleases(prev => prev.map(r => r.id === id ? { ...r, sourceUrl: trimmed } : r))
+    await supabase.from('releases').update({ source_url: trimmed }).eq('id', id)
+  }, [])
+
+  const saveDateOverride = useCallback(async (id: string, date: string) => {
+    setReleases(prev => prev.map(r => r.id === id ? { ...r, releaseDate: date } : r))
+    await supabase.from('releases').update({ release_date: date }).eq('id', id)
+  }, [])
+
+  const toggleFavorite = useCallback(async (release: Release) => {
+    const next = !release.isFavorite
+    setReleases(prev => prev.map(r => r.id === release.id ? { ...r, isFavorite: next } : r))
+    await supabase.from('releases').update({ is_favorite: next }).eq('id', release.id)
+  }, [])
 
   // Final verification step: live YouTube/web check, used as the last step of research.
   const verifyRelease = useCallback(async (release: Release, currentDateOverride?: string) => {
@@ -1094,23 +1224,36 @@ export default function ReleasesPage() {
           title: release.title,
           artist: release.artist,
           type: release.type,
-          currentDate: currentDateOverride ?? dateOverrides[release.id] ?? release.releaseDate,
+          currentDate: currentDateOverride ?? release.releaseDate,
         }),
       })
       const data: { date: string | null; confidence: Confidence; note: string; sourceUrl: string | null; released: boolean } = await res.json()
+      const patch: Partial<Release> = {}
+      const dbPatch: Record<string, unknown> = {}
       if (data.date && data.confidence === 'confirmed') {
-        setDateOverrides(prev => ({ ...prev, [release.id]: data.date! }))
+        patch.releaseDate = data.date
+        patch.isEstimated = false
+        dbPatch.release_date = data.date
+        dbPatch.is_estimated = false
       }
       if (data.sourceUrl && data.confidence === 'confirmed') {
-        setSourceUrls(prev => ({ ...prev, [release.id]: data.sourceUrl! }))
+        patch.sourceUrl = data.sourceUrl
+        dbPatch.source_url = data.sourceUrl
       }
       if (data.note) {
-        setVerifyNotes(prev => ({ ...prev, [release.id]: data.note }))
+        patch.verifyNote = data.note
+        dbPatch.verify_note = data.note
+      }
+      if (Object.keys(patch).length) {
+        setReleases(prev => prev.map(r => r.id === release.id ? { ...r, ...patch } : r))
+      }
+      if (Object.keys(dbPatch).length) {
+        await supabase.from('releases').update(dbPatch).eq('id', release.id)
       }
     } finally {
       setVerifyStatus(prev => ({ ...prev, [release.id]: 'done' }))
     }
-  }, [dateOverrides])
+  }, [])
 
   const researchRelease = useCallback(async (release: Release) => {
     setResearchStatus(prev => ({ ...prev, [release.id]: 'checking' }))
@@ -1123,47 +1266,110 @@ export default function ReleasesPage() {
           artist: release.artist,
           type: release.type,
           genre: release.genre,
-          releaseDate: dateOverrides[release.id] ?? release.releaseDate,
+          releaseDate: release.releaseDate,
           today: TODAY,
         }),
       })
       const data = await res.json()
-      let latestDate = dateOverrides[release.id] ?? release.releaseDate
+      let latestDate = release.releaseDate
+      const patch: Partial<Release> = {}
+      const dbPatch: Record<string, unknown> = {}
       if (data.date && data.dateConfidence === 'confirmed') {
-        setDateOverrides(prev => ({ ...prev, [release.id]: data.date }))
+        patch.releaseDate = data.date
+        patch.isEstimated = false
+        dbPatch.release_date = data.date
+        dbPatch.is_estimated = false
         latestDate = data.date
       }
       if (data.buzzScore != null) {
-        setBuzzOverrides(prev => ({ ...prev, [release.id]: { buzz: data.buzzScore, delta: data.buzzDelta ?? null } }))
+        patch.buzz = data.buzzScore
+        patch.buzzDelta = data.buzzDelta ?? undefined
+        dbPatch.buzz = data.buzzScore
+        dbPatch.buzz_delta = data.buzzDelta ?? null
       }
       // Video URL takes priority for music videos, otherwise use as source link
       const newUrl = data.videoUrl ?? data.sourceLinkUrl
-      if (newUrl && !sourceUrls[release.id]) {
-        setSourceUrls(prev => ({ ...prev, [release.id]: newUrl }))
+      if (newUrl && !release.sourceUrl) {
+        patch.sourceUrl = newUrl
+        dbPatch.source_url = newUrl
+      }
+      if (Object.keys(patch).length) {
+        setReleases(prev => prev.map(r => r.id === release.id ? { ...r, ...patch } : r))
+      }
+      if (Object.keys(dbPatch).length) {
+        await supabase.from('releases').update(dbPatch).eq('id', release.id)
       }
       // Final verification step: still shows as upcoming — confirm it hasn't
       // actually already released (live YouTube/web check) before trusting that.
       if (latestDate > TODAY) {
-        await verifyRelease(release, latestDate)
+        await verifyRelease({ ...release, ...patch }, latestDate)
       }
     } finally {
+      const now = Date.now()
       setResearchStatus(prev => ({ ...prev, [release.id]: 'done' }))
-      setResearchedAt(prev => ({ ...prev, [release.id]: Date.now() }))
+      setReleases(prev => prev.map(r => r.id === release.id ? { ...r, researchedAt: now } : r))
+      await supabase.from('releases').update({ researched_at: new Date(now).toISOString() }).eq('id', release.id)
     }
-  }, [dateOverrides, sourceUrls, verifyRelease])
+  }, [verifyRelease])
 
   const researchAll = useCallback(async () => {
     setResearchingAll(true)
     try {
-      for (const release of SEED_RELEASES) {
+      for (const release of releases) {
         await researchRelease(release)
       }
     } finally {
       setResearchingAll(false)
     }
-  }, [researchRelease])
+  }, [releases, researchRelease])
 
-  if (authLoading) return (
+  // Search the web right now for trending titles not already tracked, insert
+  // them, and prune back down to MAX_RELEASES (favorites are always kept).
+  const discoverTrending = useCallback(async () => {
+    setDiscovering(true)
+    try {
+      const existingTitles = releases.map(r => r.artist ? `${r.artist} - ${r.title}` : r.title)
+      const res = await fetch('/api/admin/discover-trending', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ existingTitles, today: TODAY }),
+      })
+      const data: { candidates: DiscoveredRelease[] } = await res.json()
+      if (!data.candidates?.length) return
+
+      // The prompt asks the model to skip titles we already track, but LLM
+      // instruction-following isn't guaranteed — enforce it in code too.
+      const existingKeys = new Set(releases.map(r => slugify(r.artist ? `${r.artist}-${r.title}` : r.title)))
+      const freshCandidates = data.candidates.filter(c => !existingKeys.has(slugify(c.artist ? `${c.artist}-${c.title}` : c.title)))
+      if (freshCandidates.length === 0) return
+
+      const existingIds = new Set(releases.map(r => r.id))
+      const newRows = freshCandidates.map(c => candidateToRow(c, existingIds))
+      const { data: inserted } = await supabase.from('releases').insert(newRows).select()
+      if (!inserted || inserted.length === 0) return
+
+      const newReleases = (inserted as ReleaseRow[]).map(rowToRelease)
+      let combined = [...releases, ...newReleases]
+
+      if (combined.length > MAX_RELEASES) {
+        const favorites = combined.filter(r => r.isFavorite)
+        const nonFavorites = combined.filter(r => !r.isFavorite).sort((a, b) => a.buzz - b.buzz)
+        const capacity = Math.max(0, MAX_RELEASES - favorites.length)
+        const overflow = nonFavorites.slice(0, nonFavorites.length - capacity)
+        const kept = nonFavorites.slice(nonFavorites.length - capacity)
+        if (overflow.length) {
+          await supabase.from('releases').delete().in('id', overflow.map(r => r.id))
+        }
+        combined = [...favorites, ...kept]
+      }
+
+      setReleases(combined)
+    } finally {
+      setDiscovering(false)
+    }
+  }, [releases])
+
+  if (authLoading || releasesLoading) return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center">
       <p className="text-white/30">Loading...</p>
     </div>
@@ -1174,21 +1380,20 @@ export default function ReleasesPage() {
     </div>
   )
 
-  const filtered = SEED_RELEASES
+  const filtered = releases
     .filter(r => filter === 'all' || r.type === filter)
     .sort((a, b) => {
-      const aDate = dateOverrides[a.id] ?? a.releaseDate
-      const bDate = dateOverrides[b.id] ?? b.releaseDate
       let cmp = 0
       if (sortKey === 'title') cmp = a.title.localeCompare(b.title)
       if (sortKey === 'type') cmp = a.type.localeCompare(b.type)
-      if (sortKey === 'date') cmp = aDate.localeCompare(bDate)
-      if (sortKey === 'buzz') cmp = (buzzOverrides[a.id]?.buzz ?? a.buzz) - (buzzOverrides[b.id]?.buzz ?? b.buzz)
+      if (sortKey === 'date') cmp = a.releaseDate.localeCompare(b.releaseDate)
+      if (sortKey === 'buzz') cmp = a.buzz - b.buzz
       return sortDir === 'asc' ? cmp : -cmp
     })
 
-  const releasedCount = filtered.filter(r => isReleased(r.id, r.releaseDate)).length
-  const estimatedCount = filtered.filter(r => r.isEstimated && !dateOverrides[r.id]).length
+  const releasedCount = filtered.filter(r => r.releaseDate <= TODAY).length
+  const estimatedCount = filtered.filter(r => r.isEstimated).length
+  const favoriteCount = releases.filter(r => r.isFavorite).length
 
   return (
     <main className="min-h-screen bg-black text-white">
@@ -1203,7 +1408,7 @@ export default function ReleasesPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold mb-1">Upcoming & Current Releases</h1>
           <p className="text-sm text-white/40">
-            Films, shows, and music videos July – Sep 2026. Click a row to browse your clips and assign them to Featured or the Public Library.
+            Films, shows, and music videos, kept up to date automatically. Click a row to browse your clips and assign them to Featured or the Public Library.
             <span className="inline-flex items-center gap-1.5 ml-4 text-amber-400/70">
               <span className="inline-block w-2 h-2 rounded-sm bg-amber-500/50" />
               Amber = released
@@ -1211,6 +1416,11 @@ export default function ReleasesPage() {
             {estimatedCount > 0 && (
               <span className="inline-flex items-center gap-1 ml-4 text-white/25 text-xs italic">
                 {estimatedCount} estimated date{estimatedCount !== 1 ? 's' : ''} — click ↻ to auto-verify
+              </span>
+            )}
+            {favoriteCount > 0 && (
+              <span className="inline-flex items-center gap-1 ml-4 text-amber-400/60 text-xs">
+                ★ {favoriteCount} favorited — kept through refreshes
               </span>
             )}
           </p>
@@ -1255,11 +1465,19 @@ export default function ReleasesPage() {
                 filter === f ? 'bg-white/10 border-white/30 text-white' : 'border-white/10 text-white/30 hover:border-white/20 hover:text-white/60'
               }`}
             >
-              {f === 'all' ? `All (${SEED_RELEASES.length})` : f === 'music_video' ? 'Music Videos' : `${TYPE_LABEL[f]}s`}
+              {f === 'all' ? `All (${releases.length})` : f === 'music_video' ? 'Music Videos' : `${TYPE_LABEL[f]}s`}
             </button>
           ))}
           <div className="ml-auto flex items-center gap-3">
             <span className="text-xs text-white/20">{releasedCount} of {filtered.length} released</span>
+            <button
+              onClick={() => discoverTrending()}
+              disabled={discovering}
+              title={`Search the web right now for trending films/shows/music videos (including surprise drops) not already on this list, up to a max of ${MAX_RELEASES} total — favorited titles are never dropped`}
+              className="text-xs px-3 py-1.5 rounded-full border border-white/10 text-white/30 hover:border-white/30 hover:text-white/60 transition disabled:opacity-30"
+            >
+              {discovering ? '⟳ Discovering...' : '+ Discover Trending Now'}
+            </button>
             <button
               onClick={() => researchAll()}
               disabled={researchingAll}
@@ -1281,11 +1499,9 @@ export default function ReleasesPage() {
           </div>
 
           {filtered.map(release => {
-            const released = isReleased(release.id, release.releaseDate)
+            const released = release.releaseDate <= TODAY
             const isActive = activeRelease?.id === release.id
-            const effectiveSourceUrl = sourceUrls[release.id] ?? release.sourceUrl ?? (release.type !== 'music_video' ? getFallbackUrl(release) : '')
-            const effectiveBuzz = buzzOverrides[release.id]?.buzz ?? release.buzz
-            const effectiveDelta = buzzOverrides[release.id]?.delta ?? release.buzzDelta
+            const effectiveSourceUrl = release.sourceUrl ?? (release.type !== 'music_video' ? getFallbackUrl(release) : '')
             const resStatus = researchStatus[release.id] ?? 'idle'
 
             return (
@@ -1304,6 +1520,13 @@ export default function ReleasesPage() {
                 {/* Title */}
                 <div>
                   <div className="flex items-center gap-2">
+                    <button
+                      onClick={e => { e.stopPropagation(); toggleFavorite(release) }}
+                      title={release.isFavorite ? 'Remove from favorites' : 'Star to keep this pinned through discovery refreshes'}
+                      className={`text-sm leading-none shrink-0 transition ${release.isFavorite ? 'text-amber-400' : 'text-white/15 hover:text-white/40'}`}
+                    >
+                      {release.isFavorite ? '★' : '☆'}
+                    </button>
                     {effectiveSourceUrl ? (
                       <a
                         href={effectiveSourceUrl}
@@ -1333,8 +1556,8 @@ export default function ReleasesPage() {
                       {resStatus === 'checking' ? '⟳' : resStatus === 'done' ? '✓' : '⟳'}
                     </button>
                   </div>
-                  {researchedAt[release.id] && (
-                    <p className="text-[10px] text-white/15 mt-0.5">as of {formatAsOf(researchedAt[release.id])}</p>
+                  {release.researchedAt && (
+                    <p className="text-[10px] text-white/15 mt-0.5">as of {formatAsOf(release.researchedAt)}</p>
                   )}
                 </div>
 
@@ -1347,16 +1570,14 @@ export default function ReleasesPage() {
                 <div onClick={e => e.stopPropagation()}>
                   <DateCell
                     release={release}
-                    dateOverride={dateOverrides[release.id] ?? null}
                     verifyStatus={verifyStatus[release.id] ?? 'idle'}
-                    verifyNote={verifyNotes[release.id] ?? null}
                     onDateSave={saveDateOverride}
                     onVerify={verifyRelease}
                   />
                 </div>
 
                 {/* Buzz */}
-                <BuzzBar value={effectiveBuzz} delta={effectiveDelta} />
+                <BuzzBar value={release.buzz} delta={release.buzzDelta} />
               </div>
             )
           })}
@@ -1366,7 +1587,7 @@ export default function ReleasesPage() {
       {activeRelease && (
         <ClipDrawer
           release={activeRelease}
-          sourceUrl={sourceUrls[activeRelease.id] ?? activeRelease.sourceUrl ?? (activeRelease.type !== 'music_video' ? getFallbackUrl(activeRelease) : '')}
+          sourceUrl={activeRelease.sourceUrl ?? (activeRelease.type !== 'music_video' ? getFallbackUrl(activeRelease) : '')}
           onClose={closeDrawer}
           onSourceUrlSave={saveSourceUrl}
         />

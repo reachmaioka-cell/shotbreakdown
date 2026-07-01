@@ -237,6 +237,18 @@ export default function AdminPage() {
 
       <div className="max-w-4xl mx-auto px-6 py-12 space-y-16">
 
+        {/* Quick nav */}
+        <section>
+          <h2 className="text-xs text-white/25 uppercase tracking-widest mb-4">Admin Tools</h2>
+          <Link
+            href="/admin/submissions"
+            className="inline-flex items-center gap-3 border border-white/10 rounded-xl px-5 py-3.5 hover:border-white/25 transition group"
+          >
+            <span className="text-sm font-medium">User Submissions</span>
+            <span className="text-xs text-white/30">Review all submissions · AI curation scores · promote to public library →</span>
+          </Link>
+        </section>
+
         {/* Import section */}
         <section>
           <h2 className="text-xl font-bold mb-1">Import shots</h2>

@@ -444,6 +444,10 @@ export default function ShotPage() {
   const [showSecondary, setShowSecondary] = useState(false)
   const playClipRef = useRef<(() => void) | null>(null)
   const [playerReady, setPlayerReady] = useState(false)
+  const [userRating, setUserRating] = useState<number | null>(null)
+  const [pendingRating, setPendingRating] = useState<number | null>(null)
+  const [ratingStatus, setRatingStatus] = useState<'idle' | 'saving' | 'saved'>('idle')
+  const ratingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('sb_role')
@@ -466,6 +470,29 @@ export default function ShotPage() {
     } catch { /* ignore */ }
     const { data: b } = await supabase.from('breakdowns').select('*').eq('shot_id', id).single()
     setBreakdown(b ?? null)
+    if (b?.user_rating) setUserRating(b.user_rating as number)
+  }
+
+  const submitRating = async (rating: number) => {
+    setRatingStatus('saving')
+    setUserRating(rating)
+    const { data: { session } } = await supabase.auth.getSession()
+    await fetch('/api/rate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shotId: id, rating, userId: session?.user?.id ?? null }),
+    })
+    setRatingStatus('saved')
+    setTimeout(() => setRatingStatus('idle'), 2000)
+  }
+
+  const handleRatingChange = (rating: number) => {
+    setPendingRating(rating)
+    if (ratingTimerRef.current) clearTimeout(ratingTimerRef.current)
+    ratingTimerRef.current = setTimeout(() => {
+      submitRating(rating)
+      setPendingRating(null)
+    }, 600)
   }
 
   useEffect(() => { loadData() }, [id])
@@ -813,6 +840,34 @@ export default function ShotPage() {
 
           {/* Right sidebar */}
           <div className="space-y-4">
+            {/* Rating */}
+            {breakdown && (
+              <div className="border border-white/10 rounded-xl p-5">
+                <h3 className="text-xs text-white/25 uppercase tracking-widest mb-4">Rate this analysis</h3>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-xs text-white/30">
+                    <span>1</span>
+                    <span className="text-lg font-semibold text-white/80">
+                      {pendingRating ?? userRating ?? '—'}
+                    </span>
+                    <span>10</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={10}
+                    step={1}
+                    value={pendingRating ?? userRating ?? 5}
+                    onChange={e => handleRatingChange(Number(e.target.value))}
+                    className="w-full accent-white cursor-pointer"
+                  />
+                  <p className="text-xs text-center text-white/20 h-4">
+                    {ratingStatus === 'saving' ? 'Saving...' : ratingStatus === 'saved' ? 'Saved' : userRating ? 'Drag to update' : 'Drag to rate'}
+                  </p>
+                </div>
+              </div>
+            )}
+
             {shot.source_url && (
               <div className="border border-white/10 rounded-xl p-5">
                 <h3 className="text-xs text-white/25 uppercase tracking-widest mb-3">Source</h3>

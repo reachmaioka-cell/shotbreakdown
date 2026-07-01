@@ -8,6 +8,7 @@ import {
   CAMERA_CATALOG, LENS_CATALOG, AI_CATALOG, LIGHTING_CATALOG,
   type GearCategory, type GearSection,
 } from '@/lib/gear'
+import type { User } from '@supabase/supabase-js'
 
 type Shot = {
   id: string
@@ -209,14 +210,24 @@ export default function ResearchPage() {
   const [loading, setLoading] = useState(true)
   const [projectMenuFor, setProjectMenuFor] = useState<string | null>(null)
   const [savingTo, setSavingTo] = useState<string | null>(null)
+  const [user, setUser] = useState<User | null>(null)
+  const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
+  const [savingShot, setSavingShot] = useState<string | null>(null)
   const filterBarRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const load = async () => {
-      const [{ data: s }, { data: b }, { data: p }] = await Promise.all([
-        supabase.from('shots').select('*').eq('status', 'analyzed').order('created_at', { ascending: false }),
+      const { data: { session } } = await supabase.auth.getSession()
+      const currentUser = session?.user ?? null
+      setUser(currentUser)
+
+      const [{ data: s }, { data: b }, { data: p }, { data: saved }] = await Promise.all([
+        supabase.from('shots').select('*').eq('status', 'analyzed').eq('is_curated', true).order('created_at', { ascending: false }),
         supabase.from('breakdowns').select('shot_id, camera_specs, ai_tools, lighting'),
         supabase.from('projects').select('id, name').order('name'),
+        currentUser
+          ? supabase.from('saved_shots').select('shot_id').eq('user_id', currentUser.id)
+          : Promise.resolve({ data: [] }),
       ])
       if (s) setShots(s)
       if (b) {
@@ -225,15 +236,28 @@ export default function ResearchPage() {
         setBreakdownMap(map)
       }
       if (p) setProjects(p)
+      if (saved) setSavedIds(new Set((saved as { shot_id: string }[]).map(r => r.shot_id)))
       setLoading(false)
     }
     load()
-    // Load view history from localStorage for "For You" scoring
     try {
       const stored = JSON.parse(localStorage.getItem('sb_viewed') ?? '[]') as string[]
       setViewedIds(stored)
     } catch { /* ignore */ }
   }, [])
+
+  const toggleSave = async (shotId: string) => {
+    if (!user) return
+    setSavingShot(shotId)
+    if (savedIds.has(shotId)) {
+      await supabase.from('saved_shots').delete().eq('user_id', user.id).eq('shot_id', shotId)
+      setSavedIds(prev => { const n = new Set(prev); n.delete(shotId); return n })
+    } else {
+      await supabase.from('saved_shots').insert({ user_id: user.id, shot_id: shotId })
+      setSavedIds(prev => new Set([...prev, shotId]))
+    }
+    setSavingShot(null)
+  }
 
   // Close panel on outside click
   useEffect(() => {
@@ -349,9 +373,16 @@ export default function ResearchPage() {
       <NavBar cta={{ href: '/submit', label: 'Analyze a Shot' }} />
 
       <div className="max-w-6xl mx-auto px-6 py-12">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-2">Research</h1>
-          <p className="text-white/40 text-sm">Discover shots by gear, technique, or AI tool. Find references you haven't seen yet.</p>
+        <div className="flex items-end justify-between mb-8">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">Public Library</h1>
+            <p className="text-white/40 text-sm">Discover shots by gear, technique, or AI tool. Save anything to your library.</p>
+          </div>
+          {!user && (
+            <Link href="/auth" className="text-xs border border-white/10 px-4 py-2 rounded-full text-white/40 hover:border-white/30 hover:text-white transition">
+              Sign in to save
+            </Link>
+          )}
         </div>
 
         {/* ── Filter bar ────────────────────────────────────────────────── */}
@@ -489,20 +520,18 @@ export default function ResearchPage() {
           <div className="text-center py-24 text-white/20">Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-24 text-white/30">
-            <p className="text-lg mb-2">{activeChips.length || kw ? 'No clips in archive yet for this filter' : 'Archive is empty'}</p>
+            <p className="text-lg mb-2">{activeChips.length || kw ? 'No clips match this filter' : 'Library is empty'}</p>
             <p className="text-sm text-white/20 mb-6 max-w-sm mx-auto">
               {activeChips.length || kw
                 ? 'The catalog is ready — clips will appear here as the archive grows.'
-                : 'Analyses will populate the archive as they\'re submitted.'}
+                : 'Curated clips will appear here as the library is built.'}
             </p>
-            <Link href="/submit" className="text-sm border border-white/20 px-5 py-2.5 rounded-full hover:border-white/40 transition text-white/50">
-              Analyze a Shot
-            </Link>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {filtered.map(shot => {
               const b = breakdownMap[shot.id]
+              const isSaved = savedIds.has(shot.id)
               return (
                 <div key={shot.id} className="group border border-white/10 rounded-2xl overflow-hidden hover:border-white/20 transition">
                   <Link href={`/shot/${shot.id}`}>
@@ -530,29 +559,49 @@ export default function ResearchPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-1 pt-2 border-t border-white/5">
-                      <div className="relative">
-                        <button
-                          onClick={() => setProjectMenuFor(projectMenuFor === shot.id ? null : shot.id)}
-                          className="text-xs text-white/40 hover:text-white transition px-2 py-1 rounded-lg hover:bg-white/5"
-                        >
-                          {savingTo === shot.id ? 'Saving...' : '+ Project'}
-                        </button>
-                        {projectMenuFor === shot.id && (
-                          <div className="absolute left-0 bottom-8 bg-zinc-900 border border-white/10 rounded-xl py-1 w-48 z-10 shadow-xl">
-                            {projects.length === 0 ? (
-                              <p className="text-xs text-white/30 px-4 py-3">No projects yet</p>
-                            ) : projects.map(p => (
-                              <button key={p.id} onClick={() => saveToProject(shot.id, p.id)}
-                                className="w-full text-left px-4 py-2.5 text-sm text-white/80 hover:bg-white/5 transition">
-                                {p.name}
+                      {user ? (
+                        <div className="relative">
+                          <button
+                            onClick={() => setProjectMenuFor(projectMenuFor === shot.id ? null : shot.id)}
+                            disabled={savingShot === shot.id}
+                            className={`text-xs px-2 py-1 rounded-lg transition hover:bg-white/5 ${
+                              isSaved ? 'text-white/70 hover:text-white/40' : 'text-white/40 hover:text-white'
+                            }`}
+                          >
+                            {savingShot === shot.id ? '...' : isSaved ? '✓ Saved ▾' : '+ Save ▾'}
+                          </button>
+                          {projectMenuFor === shot.id && (
+                            <div className="absolute left-0 bottom-8 bg-zinc-900 border border-white/10 rounded-xl py-1 w-52 z-10 shadow-xl">
+                              <button
+                                onClick={async () => { await toggleSave(shot.id); setProjectMenuFor(null) }}
+                                className={`w-full text-left px-4 py-2.5 text-sm transition border-b border-white/5 ${
+                                  isSaved ? 'text-white/40 hover:bg-white/5' : 'text-white/80 hover:bg-white/5'
+                                }`}
+                              >
+                                {isSaved ? 'Remove from Library' : '+ My Library'}
                               </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                              {projects.length > 0 && (
+                                <>
+                                  <p className="text-xs text-white/20 px-4 pt-2 pb-1">Add to project</p>
+                                  {projects.map(p => (
+                                    <button key={p.id} onClick={async () => { await saveToProject(shot.id, p.id); setProjectMenuFor(null) }}
+                                      className="w-full text-left px-4 py-2.5 text-sm text-white/60 hover:bg-white/5 transition">
+                                      {p.name}
+                                    </button>
+                                  ))}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <Link href="/auth" className="text-xs text-white/30 hover:text-white transition px-2 py-1 rounded-lg hover:bg-white/5">
+                          Sign in to save
+                        </Link>
+                      )}
                       {shot.source_url && (
                         <a href={shot.source_url} target="_blank" rel="noopener noreferrer"
-                          className="text-xs text-white/40 hover:text-white transition px-2 py-1 rounded-lg hover:bg-white/5">
+                          className="text-xs text-white/40 hover:text-white transition px-2 py-1 rounded-lg hover:bg-white/5 ml-auto">
                           Source →
                         </a>
                       )}

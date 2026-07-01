@@ -233,7 +233,7 @@ async function resetStatus(shotId: string) {
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
 
-function buildPrompt(timeRange: string, focusLine: string, discipline: string | null, isVideo: boolean): string {
+function buildPrompt(timeRange: string, focusLine: string, discipline: string | null, isVideo: boolean, personalizationLine = ''): string {
   const videoIntro = isVideo
     ? `You are watching the actual video clip. Observe everything across the full duration — camera movement, lighting changes, VFX layers, editing rhythm, set details, color grade, and any post-production effects.`
     : `You are analyzing a still frame. Make confident professional inferences for every department based on what you can see.`
@@ -242,7 +242,7 @@ function buildPrompt(timeRange: string, focusLine: string, discipline: string | 
     ? `\n\nThis analysis is for: ${discipline}. Weight your recreation steps and depth of detail toward what is most actionable for that role. Every section should still be filled — but go deepest on what matters most to them.`
     : `\n\nNo specific role was provided. Fill every section with equal depth.`
 
-  return `You are a senior film analyst covering every department — camera, lighting, VFX, color, editing, production design, and art direction. Break down this shot so any filmmaker on the crew can use it.
+  return `You are a senior film analyst${personalizationLine} covering every department — camera, lighting, VFX, color, editing, production design, and art direction. Break down this shot so any filmmaker on the crew can use it.
 
 ${videoIntro}
 
@@ -331,6 +331,28 @@ Return ONLY valid JSON — no commentary, no markdown:
 
 // ─── Main route ──────────────────────────────────────────────────────────────
 
+type PreferenceProfile = {
+  computed?: {
+    top_cameras?: string[]
+    top_lighting?: string[]
+    top_movements?: string[]
+    top_ai_tools?: string[]
+    avg_rating?: number
+  }
+}
+
+function buildPersonalizationLine(profile: PreferenceProfile | null): string {
+  if (!profile?.computed) return ''
+  const { top_cameras, top_lighting, top_movements, avg_rating } = profile.computed
+  const parts: string[] = []
+  if (top_cameras?.length) parts.push(`preferred cameras: ${top_cameras.join(', ')}`)
+  if (top_lighting?.length) parts.push(`preferred lighting: ${top_lighting.join(', ')}`)
+  if (top_movements?.length) parts.push(`preferred movement: ${top_movements.join(', ')}`)
+  if (!parts.length) return ''
+  const avgNote = avg_rating ? ` (avg rating: ${avg_rating}/10)` : ''
+  return `\n\nUser preference profile${avgNote} — go deeper on: ${parts.join('; ')}.`
+}
+
 export async function POST(req: NextRequest) {
   let shotId = ''
   let tmpPath: string | null = null
@@ -344,6 +366,13 @@ export async function POST(req: NextRequest) {
 
     const { data: shotRaw } = await supabase.from('shots').select('*').eq('id', shotId).single()
     if (!shotRaw) return NextResponse.json({ error: 'Shot not found' }, { status: 404 })
+
+    // Fetch user preferences for personalization
+    let preferenceProfile: PreferenceProfile | null = null
+    if (shotRaw.user_id) {
+      const { data: prof } = await supabase.from('profiles').select('preference_profile').eq('id', shotRaw.user_id).single()
+      preferenceProfile = (prof?.preference_profile as PreferenceProfile) ?? null
+    }
 
     await supabase.from('shots').update({ status: 'pending', discipline, focus }).eq('id', shotId)
 
@@ -375,6 +404,7 @@ export async function POST(req: NextRequest) {
     const focusLine = focus
       ? `\n\nThe user specifically wants to understand: "${focus}". Make this the central thread of your breakdown.`
       : ''
+    const personalizationLine = buildPersonalizationLine(preferenceProfile)
     let rawText: string | null = null
     let usedVideo = false
 
@@ -400,7 +430,7 @@ export async function POST(req: NextRequest) {
         geminiFileUri = await uploadToGeminiAndWait(tmpPath)
         if (geminiFileUri) {
           console.log('Gemini file ready, generating analysis...')
-          const prompt = buildPrompt(timeRange, focusLine, discipline, true)
+          const prompt = buildPrompt(timeRange, focusLine, discipline, true, personalizationLine)
           rawText = await analyzeVideoWithGemini(geminiFileUri, prompt)
           if (rawText) {
             usedVideo = true
@@ -413,7 +443,7 @@ export async function POST(req: NextRequest) {
     // ── Path B: Claude analyzes a still image (fallback) ────────────────────
     if (!rawText) {
       if (!usedVideo) console.log('Falling back to Claude image analysis...')
-      const prompt = buildPrompt(timeRange, focusLine, discipline, false)
+      const prompt = buildPrompt(timeRange, focusLine, discipline, false, personalizationLine)
       let messageContent: Anthropic.MessageParam['content'] = [{ type: 'text', text: prompt }]
 
       if (shot.platform === 'youtube' && shot.source_url) {

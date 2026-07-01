@@ -235,22 +235,35 @@ export default function AdminPage() {
         <span className="text-xs text-white/30 bg-white/5 px-3 py-1 rounded-full">Admin</span>
       </nav>
 
-      <div className="max-w-4xl mx-auto px-6 py-12 space-y-16">
+      <div className="flex min-h-[calc(100vh-57px)]">
 
-        {/* Quick nav */}
-        <section>
-          <h2 className="text-xs text-white/25 uppercase tracking-widest mb-4">Admin Tools</h2>
-          <Link
-            href="/admin/submissions"
-            className="inline-flex items-center gap-3 border border-white/10 rounded-xl px-5 py-3.5 hover:border-white/25 transition group"
-          >
-            <span className="text-sm font-medium">User Submissions</span>
-            <span className="text-xs text-white/30">Review all submissions · AI curation scores · promote to public library →</span>
-          </Link>
-        </section>
+        {/* Left sidebar */}
+        <aside className="w-48 shrink-0 border-r border-white/10 px-4 py-8">
+          <p className="text-xs text-white/25 uppercase tracking-widest mb-3 px-2">Admin Tools</p>
+          <nav className="space-y-0.5">
+            <Link href="/admin/submissions" className="block text-sm px-2 py-2 rounded-lg text-white/50 hover:text-white hover:bg-white/5 transition">
+              User Submissions
+            </Link>
+            <Link href="/admin/releases" className="block text-sm px-2 py-2 rounded-lg text-white/50 hover:text-white hover:bg-white/5 transition">
+              Upcoming/Current Releases
+            </Link>
+            <Link href="/admin/collections" className="block text-sm px-2 py-2 rounded-lg text-white/50 hover:text-white hover:bg-white/5 transition">
+              Featured Collections
+            </Link>
+            <a href="#import" className="block text-sm px-2 py-2 rounded-lg text-white/50 hover:text-white hover:bg-white/5 transition">
+              Import Shots
+            </a>
+            <a href="#archive" className="block text-sm px-2 py-2 rounded-lg text-white/50 hover:text-white hover:bg-white/5 transition">
+              Archive
+            </a>
+          </nav>
+        </aside>
+
+        {/* Main content */}
+        <div className="flex-1 px-10 py-12 space-y-16 max-w-3xl">
 
         {/* Import section */}
-        <section>
+        <section id="import">
           <h2 className="text-xl font-bold mb-1">Import shots</h2>
           <p className="text-sm text-white/40 mb-8">Add shots to the queue with optional timecodes and notes for the AI, then import all at once.</p>
 
@@ -429,7 +442,7 @@ export default function AdminPage() {
         </section>
 
         {/* Archive management */}
-        <section>
+        <section id="archive">
           <div className="flex items-end justify-between mb-6">
             <div>
               <h2 className="text-xl font-bold mb-1">Archive</h2>
@@ -483,7 +496,8 @@ export default function AdminPage() {
             </>
           )}
         </section>
-      </div>
+        </div>{/* end main content */}
+      </div>{/* end flex layout */}
     </main>
   )
 }

@@ -249,10 +249,7 @@ export default function SubmitPage() {
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <NavBar links={[
-        { href: '/projects', label: 'Projects' },
-        { href: '/library', label: 'Library' },
-      ]} />
+      <NavBar cta={{ href: '/submit', label: 'Analyze a Shot' }} />
 
       <div className="max-w-xl mx-auto px-6 py-20">
         <h1 className="text-3xl font-bold mb-2">Analyze a shot</h1>
@@ -353,7 +350,7 @@ export default function SubmitPage() {
               disabled={(!url && !file) || loading}
               className="w-full bg-white text-black py-3 rounded-full font-medium hover:bg-white/90 transition disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              {loading ? 'Analyzing...' : 'Run analysis'}
+              {loading ? 'Analyzing...' : 'Run Analysis'}
             </button>
           </form>
         )}

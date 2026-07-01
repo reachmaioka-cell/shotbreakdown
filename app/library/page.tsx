@@ -191,10 +191,7 @@ export default function LibraryPage() {
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <NavBar links={[
-        { href: '/research', label: 'Library' },
-        { href: '/projects', label: 'Projects' },
-      ]} cta={{ href: '/submit', label: 'Analyze a Shot' }} />
+      <NavBar cta={{ href: '/submit', label: 'Analyze a Shot' }} />
 
       <div className="max-w-6xl mx-auto px-6 py-12">
 

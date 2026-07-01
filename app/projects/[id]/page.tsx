@@ -200,12 +200,7 @@ export default function ProjectPage() {
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <NavBar links={[
-        { href: '/featured', label: 'Featured' },
-        { href: '/research', label: 'Research' },
-        { href: '/library', label: 'Library' },
-        { href: '/projects', label: '← Projects' },
-      ]} />
+      <NavBar cta={{ href: '/submit', label: 'Analyze a Shot' }} />
 
       <div className="max-w-4xl mx-auto px-6 py-12">
 

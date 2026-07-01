@@ -20,7 +20,9 @@ const DEFAULT_LINKS: NavLink[] = [
   { href: '/library', label: 'Library' },
 ]
 
-export default function NavBar({ links = DEFAULT_LINKS, cta }: NavBarProps) {
+const DEFAULT_CTA = { href: '/submit', label: 'Analyze a Shot' }
+
+export default function NavBar({ links = DEFAULT_LINKS, cta = DEFAULT_CTA }: NavBarProps) {
   const router = useRouter()
   const menuRef = useRef<HTMLDivElement>(null)
   const [user, setUser] = useState<User | null>(null)

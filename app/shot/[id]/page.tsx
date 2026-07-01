@@ -613,11 +613,7 @@ export default function ShotPage() {
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <NavBar links={[
-        { href: '/research', label: 'Research' },
-        { href: '/projects', label: 'Projects' },
-        { href: '/library', label: '← Library' },
-      ]} />
+      <NavBar cta={{ href: '/submit', label: 'Analyze a Shot' }} />
 
       <div className="max-w-5xl mx-auto px-6 py-12">
         <button onClick={() => router.back()} className="flex items-center gap-1 text-sm text-white/40 hover:text-white transition mb-8">
@@ -843,7 +839,9 @@ export default function ShotPage() {
             {/* Rating */}
             {breakdown && (
               <div className="border border-white/10 rounded-xl p-5">
-                <h3 className="text-xs text-white/25 uppercase tracking-widest mb-4">Rate this analysis</h3>
+                <h3 className="text-xs text-white/25 uppercase tracking-widest mb-4">
+                  Rate this analysis <span className="normal-case tracking-normal text-white/20 font-normal">— This helps us tailor analyses to what you're looking for</span>
+                </h3>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs text-white/30">
                     <span>1</span>

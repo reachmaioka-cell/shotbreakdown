@@ -31,6 +31,7 @@ type Shot = {
   source_url: string | null
   created_at: string
   is_curated: boolean
+  featured: boolean
   user_id: string | null
 }
 
@@ -84,6 +85,7 @@ export default function SubmissionsPage() {
   const [loading, setLoading] = useState(true)
   const [promoting, setPromoting] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [confirmingFeatureId, setConfirmingFeatureId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<'score' | 'newest' | 'rating'>('score')
 
   useEffect(() => {
@@ -120,6 +122,11 @@ export default function SubmissionsPage() {
   const demoteShot = async (shotId: string) => {
     await supabase.from('shots').update({ is_curated: false }).eq('id', shotId)
     setShots(prev => prev.map(s => s.id === shotId ? { ...s, is_curated: false } : s))
+  }
+
+  const toggleFeatured = async (shot: Shot) => {
+    await supabase.from('shots').update({ featured: !shot.featured }).eq('id', shot.id)
+    setShots(prev => prev.map(s => s.id === shot.id ? { ...s, featured: !s.featured } : s))
   }
 
   if (authLoading) return (
@@ -219,6 +226,10 @@ export default function SubmissionsPage() {
                       onStartPromote={() => {}}
                       onConfirmPromote={() => {}}
                       onCancelPromote={() => {}}
+                      confirmingFeatureId={confirmingFeatureId}
+                      onStartFeature={() => setConfirmingFeatureId(shot.id)}
+                      onConfirmFeature={() => { toggleFeatured(shot); setConfirmingFeatureId(null) }}
+                      onCancelFeature={() => setConfirmingFeatureId(null)}
                     />
                   ))}
                 </div>
@@ -250,6 +261,10 @@ export default function SubmissionsPage() {
                       onStartPromote={() => setConfirmingId(shot.id)}
                       onConfirmPromote={() => promoteShot(shot.id)}
                       onCancelPromote={() => setConfirmingId(null)}
+                      confirmingFeatureId={confirmingFeatureId}
+                      onStartFeature={() => setConfirmingFeatureId(shot.id)}
+                      onConfirmFeature={() => { toggleFeatured(shot); setConfirmingFeatureId(null) }}
+                      onCancelFeature={() => setConfirmingFeatureId(null)}
                     />
                   ))}
                 </div>
@@ -264,8 +279,9 @@ export default function SubmissionsPage() {
 
 function SubmissionRow({
   shot, quality, userRating, score, isCurated,
-  confirmingId, promoting,
+  confirmingId, promoting, confirmingFeatureId,
   onDemote, onStartPromote, onConfirmPromote, onCancelPromote,
+  onStartFeature, onConfirmFeature, onCancelFeature,
 }: {
   shot: Shot
   quality: number
@@ -274,13 +290,18 @@ function SubmissionRow({
   isCurated: boolean
   confirmingId: string | null
   promoting: string | null
+  confirmingFeatureId: string | null
   onDemote: () => void
   onStartPromote: () => void
   onConfirmPromote: () => void
   onCancelPromote: () => void
+  onStartFeature: () => void
+  onConfirmFeature: () => void
+  onCancelFeature: () => void
 }) {
   const isConfirming = confirmingId === shot.id
   const isPromoting = promoting === shot.id
+  const isConfirmingFeature = confirmingFeatureId === shot.id
 
   return (
     <div className="flex items-center gap-4 px-4 py-3 rounded-xl hover:bg-white/[0.02] transition group">
@@ -311,36 +332,71 @@ function SubmissionRow({
         </div>
       </div>
 
-      <div className="shrink-0 w-40 flex justify-end">
-        {isCurated ? (
-          <button
-            onClick={onDemote}
-            className="text-xs text-white/25 hover:text-red-400 transition px-3 py-1.5 rounded-full border border-white/10 hover:border-red-500/30"
-          >
-            Remove from Library
-          </button>
-        ) : isConfirming ? (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-amber-400/70">Confirm?</span>
+      <div className="shrink-0 flex items-center gap-2 justify-end">
+        {/* Featured toggle */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isConfirmingFeature ? (
+            <>
+              <span className="text-xs text-amber-400/70 whitespace-nowrap">Confirm?</span>
+              <button
+                onClick={onConfirmFeature}
+                className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1.5 rounded-full font-medium hover:bg-amber-500/30 transition whitespace-nowrap"
+              >
+                Yes, add
+              </button>
+              <button onClick={onCancelFeature} className="text-xs text-white/30 hover:text-white transition">
+                Cancel
+              </button>
+            </>
+          ) : shot.featured ? (
             <button
-              onClick={onConfirmPromote}
-              disabled={isPromoting}
-              className="text-xs bg-white text-black px-3 py-1.5 rounded-full font-medium hover:bg-white/90 transition disabled:opacity-40"
+              onClick={onStartFeature}
+              className="text-xs px-3 py-1.5 rounded-full border border-amber-500/40 text-amber-400 bg-amber-500/10 hover:border-amber-500/20 hover:text-amber-400/60 transition whitespace-nowrap"
             >
-              {isPromoting ? '...' : 'Yes, add'}
+              ★ Featured
             </button>
-            <button onClick={onCancelPromote} className="text-xs text-white/30 hover:text-white transition">
-              Cancel
+          ) : (
+            <button
+              onClick={onStartFeature}
+              className="text-xs px-3 py-1.5 rounded-full border border-white/10 text-white/25 hover:border-white/30 hover:text-white/60 transition whitespace-nowrap"
+            >
+              ☆ Feature
             </button>
-          </div>
-        ) : (
-          <button
-            onClick={onStartPromote}
-            className="text-xs text-white/40 hover:text-white transition px-3 py-1.5 rounded-full border border-white/10 hover:border-white/30"
-          >
-            Add to Library
-          </button>
-        )}
+          )}
+        </div>
+
+        {/* Library toggle */}
+        <div className="w-36 flex justify-end">
+          {isCurated ? (
+            <button
+              onClick={onDemote}
+              className="text-xs text-white/25 hover:text-red-400 transition px-3 py-1.5 rounded-full border border-white/10 hover:border-red-500/30"
+            >
+              Remove from Library
+            </button>
+          ) : isConfirming ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-amber-400/70 whitespace-nowrap">Confirm?</span>
+              <button
+                onClick={onConfirmPromote}
+                disabled={isPromoting}
+                className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1.5 rounded-full font-medium hover:bg-amber-500/30 transition disabled:opacity-40 whitespace-nowrap"
+              >
+                {isPromoting ? '...' : 'Yes, add'}
+              </button>
+              <button onClick={onCancelPromote} className="text-xs text-white/30 hover:text-white transition whitespace-nowrap">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onStartPromote}
+              className="text-xs text-white/40 hover:text-white transition px-3 py-1.5 rounded-full border border-white/10 hover:border-white/30"
+            >
+              Add to Library
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

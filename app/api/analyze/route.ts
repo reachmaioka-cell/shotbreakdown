@@ -174,6 +174,29 @@ async function extractAndSaveThumbnail(sourceUrl: string, shotId: string): Promi
   return null
 }
 
+// Grab a frame from an already-downloaded clip file — used so a clip cut from
+// a longer YouTube video gets a thumbnail of its own moment, not the source
+// video's overall cover image (which would be identical across every clip cut
+// from the same video).
+async function extractFrameFromFile(filePath: string, shotId: string): Promise<string | null> {
+  const framePath = path.join(os.tmpdir(), `frame_${shotId}.jpg`)
+  try {
+    await execAsync(
+      `ffmpeg -y -i "${filePath}" -ss 00:00:01 -vframes 1 -q:v 2 "${framePath}"`,
+      { timeout: 15_000, env: YTDLP_ENV }
+    )
+    if (fs.existsSync(framePath)) {
+      const buf = fs.readFileSync(framePath)
+      fs.unlink(framePath, () => {})
+      const url = await uploadThumbnailBuffer(buf, shotId, 'jpg')
+      if (url) { console.log('Thumbnail extracted from clip frame.'); return url }
+    }
+  } catch (e) {
+    console.error('Clip frame extraction failed:', String(e).slice(0, 200))
+  }
+  return null
+}
+
 async function uploadToGeminiAndWait(filePath: string): Promise<string | null> {
   try {
     const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY!)
@@ -426,6 +449,10 @@ export async function POST(req: NextRequest) {
 
       const downloaded = await downloadClip(shot.source_url!, shot.start_time ?? null, shot.end_time ?? null, tmpPath)
       if (downloaded) {
+        if (!shot.thumbnail_url) {
+          const frameUrl = await extractFrameFromFile(tmpPath, shotId)
+          if (frameUrl) { thumbnailUrl = frameUrl; shot.thumbnail_url = frameUrl }
+        }
         console.log('Clip downloaded, uploading to Gemini...')
         geminiFileUri = await uploadToGeminiAndWait(tmpPath)
         if (geminiFileUri) {

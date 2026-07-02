@@ -137,6 +137,7 @@ type DrawerShot = {
   title: string
   thumbnail_url: string | null
   platform: string
+  source_url: string | null
   is_curated: boolean
   collection_id: string | null
   start_time: string | null
@@ -163,6 +164,17 @@ function getFallbackUrl(release: Release): string {
 
 function formatAsOf(ts: number): string {
   return new Date(ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+function ytId(url: string): string | null {
+  const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?/]+)/)
+  return m ? m[1] : null
+}
+
+function tcSecs(t: string | null): number {
+  if (!t) return 0
+  const [m, s] = t.split(':').map(Number)
+  return (m || 0) * 60 + (s || 0)
 }
 
 // ─── SEED DATA (Jul–Sep 2026) ─────────────────────────────────────────────────
@@ -658,11 +670,13 @@ function SortHeader({ label, sortKey, active, dir, onClick }: {
 function ClipDrawer({
   release,
   sourceUrl,
+  userId,
   onClose,
   onSourceUrlSave,
 }: {
   release: Release
   sourceUrl: string
+  userId: string
   onClose: () => void
   onSourceUrlSave: (id: string, url: string) => void
 }) {
@@ -681,6 +695,9 @@ function ClipDrawer({
   const [suggestedClips, setSuggestedClips] = useState<SuggestedClip[]>([])
   const [suggesting, setSuggesting] = useState(false)
   const [analyzingClips, setAnalyzingClips] = useState<Set<string>>(new Set())
+  const [analyzeErrors, setAnalyzeErrors] = useState<Record<string, string>>({})
+  const [analyzedClipTitles, setAnalyzedClipTitles] = useState<Set<string>>(new Set())
+  const [hoveringShotId, setHoveringShotId] = useState<string | null>(null)
   const [showImport, setShowImport] = useState(false)
 
   const released = release.releaseDate <= TODAY
@@ -689,7 +706,7 @@ function ClipDrawer({
     if (!sourceUrl) { setLoading(false); return }
     supabase
       .from('shots')
-      .select('id, title, thumbnail_url, platform, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
+      .select('id, title, thumbnail_url, platform, source_url, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
       .eq('status', 'analyzed')
       .eq('source_url', sourceUrl)
       .order('created_at', { ascending: false })
@@ -705,22 +722,30 @@ function ClipDrawer({
     return () => window.removeEventListener('keydown', handler)
   }, [onClose])
 
-  const ensureCollection = async (): Promise<string | null> => {
-    if (collectionId) return collectionId
+  const ensureCollection = async (): Promise<{ id: string | null; error: string | null }> => {
+    if (collectionId) return { id: collectionId, error: null }
     const title = release.artist ? `${release.title} — ${release.artist}` : release.title
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('collections')
       .insert({ title, type: release.type, description: release.description, is_featured: false })
       .select().single()
-    if (!data) return null
+    if (error) {
+      console.error('Failed to create collection:', error.message)
+      return { id: null, error: error.message }
+    }
+    if (!data) return { id: null, error: 'Unknown error creating collection' }
     setCollectionId(data.id)
-    return data.id
+    return { id: data.id, error: null }
   }
 
   const addToFeatured = async (shot: DrawerShot) => {
     setWorking(shot.id + '-feature')
-    const colId = await ensureCollection()
-    if (!colId) { setWorking(null); return }
+    const { id: colId, error } = await ensureCollection()
+    if (!colId) {
+      setAnalyzeErrors(prev => ({ ...prev, [shot.id]: error ?? 'Could not create Featured collection' }))
+      setWorking(null)
+      return
+    }
     await supabase.from('shots').update({ collection_id: colId }).eq('id', shot.id)
     setShots(prev => prev.map(s => s.id === shot.id ? { ...s, collection_id: colId } : s))
     setShotStatus(prev => {
@@ -772,8 +797,9 @@ function ClipDrawer({
     if (!effectiveUrl) return
     const key = clip.title
     setAnalyzingClips(prev => new Set(prev).add(key))
+    setAnalyzeErrors(prev => { const n = { ...prev }; delete n[key]; return n })
     try {
-      const { data: newShot } = await supabase
+      const { data: newShot, error: insertError } = await supabase
         .from('shots')
         .insert({
           title: `${release.title} — ${clip.title}`,
@@ -782,22 +808,34 @@ function ClipDrawer({
           start_time: clip.startTime,
           end_time: clip.endTime,
           status: 'pending',
+          user_id: userId,
         })
         .select()
         .single()
-      if (!newShot) return
+      if (insertError || !newShot) {
+        console.error('Failed to create shot for clip:', insertError?.message)
+        setAnalyzeErrors(prev => ({ ...prev, [key]: insertError?.message ?? 'Could not create shot' }))
+        return
+      }
       setShots(prev => [{ ...newShot, breakdowns: [] } as DrawerShot, ...prev])
-      await fetch('/api/analyze', {
+      const analyzeRes = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shotId: newShot.id, focus: clip.focus }),
       })
+      if (!analyzeRes.ok) {
+        const body = await analyzeRes.json().catch(() => ({}))
+        setAnalyzeErrors(prev => ({ ...prev, [key]: body.error ?? 'Analysis failed' }))
+      }
       const { data: analyzed } = await supabase
         .from('shots')
-        .select('id, title, thumbnail_url, platform, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
+        .select('id, title, thumbnail_url, platform, source_url, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
         .eq('id', newShot.id)
         .single()
-      if (analyzed) setShots(prev => prev.map(s => s.id === newShot.id ? analyzed as DrawerShot : s))
+      if (analyzed) {
+        setShots(prev => prev.map(s => s.id === newShot.id ? analyzed as DrawerShot : s))
+        setAnalyzedClipTitles(prev => new Set(prev).add(key))
+      }
     } finally {
       setAnalyzingClips(prev => { const n = new Set(prev); n.delete(key); return n })
     }
@@ -912,6 +950,8 @@ function ClipDrawer({
                   <div className="space-y-2">
                     {suggestedClips.map(clip => {
                       const isAnalyzing = analyzingClips.has(clip.title)
+                      const isAnalyzed = analyzedClipTitles.has(clip.title)
+                      const clipError = analyzeErrors[clip.title]
                       return (
                         <div key={clip.title} className="border border-white/8 rounded-lg p-3">
                           <div className="flex items-start justify-between gap-2">
@@ -921,14 +961,23 @@ function ClipDrawer({
                                 {clip.startTime} – {clip.endTime}
                               </p>
                               <p className="text-[10px] text-white/25 mt-1 leading-snug">{clip.focus}</p>
+                              {clipError && (
+                                <p className="text-[10px] text-red-400/70 mt-1.5 leading-snug">⚠ {clipError}</p>
+                              )}
                             </div>
-                            <button
-                              onClick={() => analyzeClip(clip)}
-                              disabled={isAnalyzing}
-                              className="text-[10px] shrink-0 px-2.5 py-1.5 rounded-lg border border-white/15 text-white/40 hover:border-white/30 hover:text-white/70 transition disabled:opacity-30 whitespace-nowrap"
-                            >
-                              {isAnalyzing ? 'Analyzing...' : 'Analyze'}
-                            </button>
+                            {isAnalyzed ? (
+                              <span className="text-[10px] shrink-0 px-2.5 py-1.5 text-emerald-400/70 whitespace-nowrap">
+                                ✓ Analyzed — see below
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => analyzeClip(clip)}
+                                disabled={isAnalyzing}
+                                className="text-[10px] shrink-0 px-2.5 py-1.5 rounded-lg border border-white/15 text-white/40 hover:border-white/30 hover:text-white/70 transition disabled:opacity-30 whitespace-nowrap"
+                              >
+                                {isAnalyzing ? 'Analyzing...' : clipError ? 'Retry' : 'Analyze'}
+                              </button>
+                            )}
                           </div>
                         </div>
                       )
@@ -985,18 +1034,37 @@ function ClipDrawer({
             const isConfirmingFeature = confirmingFeature === shot.id
             const isConfirmingLibrary = confirmingLibrary === shot.id
 
+            const shotYtId = shot.platform === 'youtube' && shot.source_url ? ytId(shot.source_url) : null
+
             return (
               <div key={shot.id} className="border border-white/8 rounded-xl overflow-hidden">
                 <div className="flex gap-3 p-3">
-                  <div className="shrink-0">
+                  <Link
+                    href={`/shot/${shot.id}`}
+                    target="_blank"
+                    className="shrink-0 relative w-20 h-12 rounded-lg overflow-hidden block"
+                    onMouseEnter={() => setHoveringShotId(shot.id)}
+                    onMouseLeave={() => setHoveringShotId(null)}
+                  >
                     {shot.thumbnail_url ? (
-                      <img src={shot.thumbnail_url} alt={shot.title} className="w-20 h-12 object-cover rounded-lg" />
+                      <img src={shot.thumbnail_url} alt={shot.title} className="absolute inset-0 w-full h-full object-cover" />
                     ) : (
-                      <div className="w-20 h-12 bg-white/5 rounded-lg flex items-center justify-center">
+                      <div className="absolute inset-0 w-full h-full bg-white/5 flex items-center justify-center">
                         <span className="text-white/10 text-xs">No img</span>
                       </div>
                     )}
-                  </div>
+                    {hoveringShotId === shot.id && shotYtId && (() => {
+                      const start = tcSecs(shot.start_time)
+                      const end = tcSecs(shot.end_time)
+                      return (
+                        <iframe
+                          src={`https://www.youtube-nocookie.com/embed/${shotYtId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&start=${start}${end > start ? `&end=${end}` : ''}`}
+                          className="absolute inset-0 w-full h-full pointer-events-none"
+                          allow="autoplay; encrypted-media"
+                        />
+                      )
+                    })()}
+                  </Link>
                   <div className="flex-1 min-w-0">
                     <Link href={`/shot/${shot.id}`} target="_blank"
                       className="text-sm font-medium text-white/80 hover:text-white transition line-clamp-1">
@@ -1058,6 +1126,9 @@ function ClipDrawer({
                     )}
                   </div>
                 </div>
+                {analyzeErrors[shot.id] && (
+                  <p className="text-[10px] text-red-400/70 px-3 py-2 border-t border-white/8">⚠ {analyzeErrors[shot.id]}</p>
+                )}
               </div>
             )
           })}
@@ -1595,6 +1666,7 @@ export default function ReleasesPage() {
         <ClipDrawer
           release={activeRelease}
           sourceUrl={activeRelease.sourceUrl ?? (activeRelease.type !== 'music_video' ? getFallbackUrl(activeRelease) : '')}
+          userId={user.id}
           onClose={closeDrawer}
           onSourceUrlSave={saveSourceUrl}
         />

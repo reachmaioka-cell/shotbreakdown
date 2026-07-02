@@ -76,11 +76,16 @@ async function verifyFilmOrShow(title: string, artist: string | undefined, type:
   const label = artist ? `"${title}" by ${artist}` : `"${title}"`
   const typeLabel = type === 'show' ? 'TV show' : 'film'
 
-  const prompt = `Search the web to find whether the ${typeLabel} ${label} has actually been released yet, and if so, its confirmed release date and an official/reputable source URL (official site, studio/distributor page, IMDB, or a major trade publication article).
+  const prompt = `Search the web to find whether the ${typeLabel} ${label} has actually been released yet, and if so, its confirmed release date.
 
 Currently listed release date: ${currentDate}
 
-Search for recent news to confirm or correct this. If you find a reliable, dated source, use it. If you cannot find confirmation either way, say so honestly rather than guessing.
+Search for recent news to confirm or correct the date. If you find a reliable, dated source, use it. If you cannot find confirmation either way, say so honestly rather than guessing.
+
+For the source URL, in priority order:
+1. If it has released, find its IMDB page and return the DIRECT title URL — the form https://www.imdb.com/title/ttXXXXXXX/, not a search or "/find" URL. This is the page showing its rating, and is the highest priority whenever you can find it.
+2. If you can't find a specific IMDB title page, an official site, studio/distributor page, or major trade publication article is fine instead.
+3. If it hasn't released yet, an IMDB page is still preferred if one already exists (even without a rating); otherwise use an official site or trade article.
 
 After searching, respond with ONLY a JSON object (no other text) in this exact format:
 {

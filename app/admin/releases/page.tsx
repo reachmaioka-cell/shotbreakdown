@@ -1236,7 +1236,10 @@ export default function ReleasesPage() {
         dbPatch.release_date = data.date
         dbPatch.is_estimated = false
       }
-      if (data.sourceUrl && data.confidence === 'confirmed') {
+      if (data.sourceUrl) {
+        // A live search result is trustworthy on its own — don't gate it on
+        // the date's confidence bucket, which can be 'estimated' even when
+        // the source link itself (e.g. an IMDB title page) was found cleanly.
         patch.sourceUrl = data.sourceUrl
         dbPatch.source_url = data.sourceUrl
       }
@@ -1299,9 +1302,13 @@ export default function ReleasesPage() {
       if (Object.keys(dbPatch).length) {
         await supabase.from('releases').update(dbPatch).eq('id', release.id)
       }
-      // Final verification step: still shows as upcoming — confirm it hasn't
-      // actually already released (live YouTube/web check) before trusting that.
-      if (latestDate > TODAY) {
+      // Final verification step: run the live YouTube/web check whenever
+      // either (a) it still looks upcoming — confirm it hasn't actually
+      // already released — or (b) it's missing a real source link, e.g. an
+      // already-released film/show that only ever had a generic IMDB search
+      // fallback and needs the grounded search to find the actual title page.
+      const stillMissingSourceUrl = !(patch.sourceUrl ?? release.sourceUrl)
+      if (latestDate > TODAY || stillMissingSourceUrl) {
         await verifyRelease({ ...release, ...patch }, latestDate)
       }
     } finally {

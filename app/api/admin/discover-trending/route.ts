@@ -35,6 +35,11 @@ ${exclusionList || '(none yet)'}
 - Prioritize surprise drops and very recent news over things that were already widely known weeks ago.
 - Return at most 12 candidates, ranked by how significant/trending they are right now.
 
+For sourceUrl:
+- MUSIC VIDEOS: the official YouTube video URL if you found it, else null.
+- FILMS/SHOWS that have already released: search for and return the DIRECT IMDB title page — the form https://www.imdb.com/title/ttXXXXXXX/ for that specific title, never a generic browse/search page and never a homepage like imdb.com/browse or rottentomatoes.com/browse. This is the page that shows its rating. If you can't find that specific title page, use an official site or trade article about that title specifically instead — never a generic category/browse page.
+- FILMS/SHOWS not yet released: an official trailer URL, or an IMDB page if one already exists, else null.
+
 For each candidate return an object:
 {
   "title": string,
@@ -46,7 +51,7 @@ For each candidate return an object:
   "buzz": number 0-20 (millions of estimated mention-equivalents, same scale as: social mentions + search volume + trailer views + press coverage),
   "buzzDelta": number or null (positive = rising vs prior month),
   "description": "1-2 sentences with concrete detail (director/artist, cast, concept)",
-  "sourceUrl": "URL to the video/trailer if available, else null",
+  "sourceUrl": "URL as described above, or null",
   "isEstimated": true or false (false only if you found a reputable confirmed source),
   "confirmedSource": "URL" or null
 }

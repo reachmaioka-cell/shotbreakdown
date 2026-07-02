@@ -1046,7 +1046,13 @@ function ClipDrawer({
                             <button
                               onMouseEnter={() => setHoveringClip(clip.title)}
                               onMouseLeave={() => setHoveringClip(null)}
-                              onClick={() => setReplayNonce(prev => ({ ...prev, [clip.title]: (prev[clip.title] ?? 0) + 1 }))}
+                              onClick={() => {
+                                // Safari/WebKit blocks autoplay on hover (mouseenter isn't a
+                                // user gesture) — a click always is, so force a fresh mount here
+                                // too, not just on hover. This also covers "click to replay".
+                                setHoveringClip(clip.title)
+                                setReplayNonce(prev => ({ ...prev, [clip.title]: (prev[clip.title] ?? 0) + 1 }))
+                              }}
                               className="shrink-0 w-20 h-12 rounded-lg overflow-hidden relative bg-white/5 flex items-center justify-center group"
                               title="Hover to preview — click to replay from the start"
                             >
@@ -1161,6 +1167,7 @@ function ClipDrawer({
                     className="shrink-0 relative w-20 h-12 rounded-lg overflow-hidden block"
                     onMouseEnter={() => setHoveringShotId(shot.id)}
                     onMouseLeave={() => setHoveringShotId(null)}
+                    onClick={() => setHoveringShotId(shot.id)}
                   >
                     {shot.thumbnail_url ? (
                       <img src={shot.thumbnail_url} alt={shot.title} className="absolute inset-0 w-full h-full object-cover" />

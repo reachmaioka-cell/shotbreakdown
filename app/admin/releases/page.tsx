@@ -1543,7 +1543,24 @@ export default function ReleasesPage() {
       const { data: inserted } = await supabase.from('releases').insert(newRows).select()
       if (!inserted || inserted.length === 0) return
 
-      const newReleases = (inserted as ReleaseRow[]).map(rowToRelease)
+      let newReleases = (inserted as ReleaseRow[]).map(rowToRelease)
+
+      // The discovery search doesn't always land a real IMDB page or a
+      // playable trailer on the first try — verify every fresh candidate
+      // immediately so it never sits broken until someone happens to
+      // notice and manually clicks Research on it. These ids aren't in
+      // `releases` state yet, so verifyRelease's own setReleases call is a
+      // no-op for them — it still writes the DB correctly though, so
+      // re-fetch the fresh rows afterward to pick that up.
+      const needsVerify = newReleases.filter(r => !r.sourceUrl || !r.trailerUrl)
+      for (const r of needsVerify) {
+        await verifyRelease(r, r.releaseDate)
+      }
+      if (needsVerify.length > 0) {
+        const { data: refreshed } = await supabase.from('releases').select('*').in('id', newReleases.map(r => r.id))
+        if (refreshed) newReleases = (refreshed as ReleaseRow[]).map(rowToRelease)
+      }
+
       let combined = [...releases, ...newReleases]
 
       if (combined.length > MAX_RELEASES) {
@@ -1562,7 +1579,7 @@ export default function ReleasesPage() {
     } finally {
       setDiscovering(false)
     }
-  }, [releases])
+  }, [releases, verifyRelease])
 
   if (authLoading || releasesLoading) return (
     <div className="min-h-screen bg-black text-white flex items-center justify-center">

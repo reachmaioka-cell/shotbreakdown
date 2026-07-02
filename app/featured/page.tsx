@@ -60,7 +60,7 @@ export default function FeaturedPage() {
             {collections.map(col => (
               <Link key={col.id} href={`/featured/${col.id}`}>
                 <div className="group cursor-pointer">
-                  <div className="aspect-[2/3] rounded-xl overflow-hidden bg-white/5 mb-3 relative">
+                  <div className="aspect-video rounded-xl overflow-hidden bg-white/5 mb-3 relative">
                     {col.cover_url ? (
                       <img
                         src={col.cover_url}

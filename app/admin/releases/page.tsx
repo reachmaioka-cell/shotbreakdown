@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import type { User } from '@supabase/supabase-js'
 import type { DiscoveredRelease } from '@/app/api/admin/discover-trending/route'
+import { YoutubeEmbed } from '@/app/_components/YoutubeEmbed'
 
 const ADMIN_EMAIL = 'reachmaioka@gmail.com'
 const TODAY = '2026-07-01'
@@ -27,6 +28,9 @@ type Release = {
   buzzDelta?: number  // positive = up vs prior month, negative = down, 0 = flat
   description: string
   sourceUrl?: string
+  trailerUrl?: string  // playable YouTube URL — separate from sourceUrl because
+                        // for films/shows sourceUrl is the IMDB rating page,
+                        // which yt-dlp cannot download or embed from
   isEstimated: boolean
   confirmedSource?: string
   isFavorite: boolean
@@ -49,6 +53,7 @@ type ReleaseRow = {
   buzz_delta: number | null
   description: string
   source_url: string | null
+  trailer_url: string | null
   confirmed_source: string | null
   is_estimated: boolean
   is_favorite: boolean
@@ -70,6 +75,7 @@ function rowToRelease(row: ReleaseRow): Release {
     buzzDelta: row.buzz_delta ?? undefined,
     description: row.description,
     sourceUrl: row.source_url ?? undefined,
+    trailerUrl: row.trailer_url ?? undefined,
     isEstimated: row.is_estimated,
     confirmedSource: row.confirmed_source ?? undefined,
     isFavorite: row.is_favorite,
@@ -92,6 +98,7 @@ function releaseToBootstrapRow(release: SeedRelease): ReleaseRow {
     buzz_delta: release.buzzDelta ?? null,
     description: release.description,
     source_url: release.sourceUrl ?? null,
+    trailer_url: null,
     confirmed_source: release.confirmedSource ?? null,
     is_estimated: release.isEstimated,
     is_favorite: false,
@@ -123,6 +130,7 @@ function candidateToRow(c: DiscoveredRelease, existingIds: Set<string>): Release
     buzz_delta: c.buzzDelta,
     description: c.description,
     source_url: c.sourceUrl,
+    trailer_url: c.trailerUrl,
     confirmed_source: c.confirmedSource,
     is_estimated: c.isEstimated,
     is_favorite: false,
@@ -138,6 +146,7 @@ type DrawerShot = {
   thumbnail_url: string | null
   platform: string
   source_url: string | null
+  status: string
   is_curated: boolean
   collection_id: string | null
   start_time: string | null
@@ -673,12 +682,14 @@ function ClipDrawer({
   userId,
   onClose,
   onSourceUrlSave,
+  onTrailerUrlSave,
 }: {
   release: Release
   sourceUrl: string
   userId: string
   onClose: () => void
   onSourceUrlSave: (id: string, url: string) => void
+  onTrailerUrlSave: (id: string, url: string) => void
 }) {
   const [shots, setShots] = useState<DrawerShot[]>([])
   const [loading, setLoading] = useState(true)
@@ -691,30 +702,43 @@ function ClipDrawer({
   const [editingUrl, setEditingUrl] = useState(false)
   const [urlDraft, setUrlDraft] = useState(sourceUrl)
 
+  // The video source actually used for Import & Analyze / clip playback.
+  // Music videos: same as sourceUrl. Films/shows: sourceUrl is the IMDB
+  // rating page (can't be downloaded/embedded), so this uses the separate
+  // trailerUrl — the real playable YouTube trailer — instead.
+  const videoUrl = release.type === 'music_video' ? sourceUrl : (release.trailerUrl ?? '')
+  const [editingTrailerUrl, setEditingTrailerUrl] = useState(false)
+  const [trailerUrlDraft, setTrailerUrlDraft] = useState(videoUrl)
+
   // Import & Analyze
   const [suggestedClips, setSuggestedClips] = useState<SuggestedClip[]>([])
   const [suggesting, setSuggesting] = useState(false)
   const [analyzingClips, setAnalyzingClips] = useState<Set<string>>(new Set())
   const [analyzeErrors, setAnalyzeErrors] = useState<Record<string, string>>({})
   const [analyzedClipTitles, setAnalyzedClipTitles] = useState<Set<string>>(new Set())
+  const [previewingClip, setPreviewingClip] = useState<string | null>(null)
   const [hoveringShotId, setHoveringShotId] = useState<string | null>(null)
   const [showImport, setShowImport] = useState(false)
 
   const released = release.releaseDate <= TODAY
 
   useEffect(() => {
-    if (!sourceUrl) { setLoading(false); return }
+    // Shots can be filed under either URL: sourceUrl (music videos, or
+    // legacy film/show clips) or videoUrl (the trailer films/shows actually
+    // get analyzed from).
+    const urls = Array.from(new Set([sourceUrl, videoUrl].filter(Boolean)))
+    if (urls.length === 0) { setLoading(false); return }
     supabase
       .from('shots')
-      .select('id, title, thumbnail_url, platform, source_url, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
-      .eq('status', 'analyzed')
-      .eq('source_url', sourceUrl)
+      .select('id, title, thumbnail_url, platform, source_url, status, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
+      .in('status', ['analyzed', 'failed'])
+      .in('source_url', urls)
       .order('created_at', { ascending: false })
       .then(({ data }) => {
         setShots((data ?? []) as DrawerShot[])
         setLoading(false)
       })
-  }, [sourceUrl])
+  }, [sourceUrl, videoUrl])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -793,7 +817,7 @@ function ClipDrawer({
   }
 
   const analyzeClip = async (clip: SuggestedClip) => {
-    const effectiveUrl = sourceUrl
+    const effectiveUrl = videoUrl
     if (!effectiveUrl) return
     const key = clip.title
     setAnalyzingClips(prev => new Set(prev).add(key))
@@ -823,18 +847,23 @@ function ClipDrawer({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ shotId: newShot.id, focus: clip.focus }),
       })
-      if (!analyzeRes.ok) {
-        const body = await analyzeRes.json().catch(() => ({}))
-        setAnalyzeErrors(prev => ({ ...prev, [key]: body.error ?? 'Analysis failed' }))
-      }
       const { data: analyzed } = await supabase
         .from('shots')
-        .select('id, title, thumbnail_url, platform, source_url, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
+        .select('id, title, thumbnail_url, platform, source_url, status, is_curated, collection_id, start_time, end_time, breakdowns(camera_specs, lighting, camera_movement)')
         .eq('id', newShot.id)
         .single()
       if (analyzed) {
         setShots(prev => prev.map(s => s.id === newShot.id ? analyzed as DrawerShot : s))
+      }
+      if (!analyzeRes.ok) {
+        const body = await analyzeRes.json().catch(() => ({}))
+        setAnalyzeErrors(prev => ({ ...prev, [key]: body.error ?? 'Analysis failed' }))
+      } else if (analyzed && (analyzed as DrawerShot).breakdowns?.length) {
+        // Only mark as truly "analyzed" once a breakdown row actually exists —
+        // the shots row itself always exists after insert, even on failure.
         setAnalyzedClipTitles(prev => new Set(prev).add(key))
+      } else {
+        setAnalyzeErrors(prev => ({ ...prev, [key]: 'Analysis finished with no breakdown — try again' }))
       }
     } finally {
       setAnalyzingClips(prev => { const n = new Set(prev); n.delete(key); return n })
@@ -927,18 +956,54 @@ function ClipDrawer({
           )}
         </div>
 
-        {/* Import & Analyze — only for released content with a known video URL */}
-        {sourceUrl && released && (
+        {/* Import & Analyze — only for released content */}
+        {released && (
           <div className="px-6 py-3 border-b border-white/8 shrink-0">
             <button
-              onClick={() => { setShowImport(v => !v); if (!showImport && suggestedClips.length === 0) suggestClips() }}
+              onClick={() => { setShowImport(v => !v); if (!showImport && videoUrl && suggestedClips.length === 0) suggestClips() }}
               className="flex items-center justify-between w-full text-left"
             >
               <span className="text-xs text-white/50 uppercase tracking-widest">Import & Analyze</span>
               <span className="text-white/20 text-xs">{showImport ? '▲' : '▼'}</span>
             </button>
 
-            {showImport && (
+            {showImport && !videoUrl && release.type !== 'music_video' && (
+              <div className="mt-3 space-y-2">
+                <p className="text-xs text-white/25 leading-relaxed">
+                  No trailer link yet. Import &amp; Analyze needs a playable YouTube trailer — the Source link above is IMDB's rating page, which can't be downloaded or embedded. Run Research on this release to find one automatically, or add it manually.
+                </p>
+                {editingTrailerUrl ? (
+                  <div className="flex gap-2 items-center">
+                    <input
+                      autoFocus type="url" value={trailerUrlDraft}
+                      onChange={e => setTrailerUrlDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { onTrailerUrlSave(release.id, trailerUrlDraft); setEditingTrailerUrl(false) }
+                        if (e.key === 'Escape') setEditingTrailerUrl(false)
+                      }}
+                      placeholder="Paste the official trailer's YouTube URL..."
+                      className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder:text-white/20 focus:outline-none focus:border-white/30 transition"
+                    />
+                    <button onClick={() => { onTrailerUrlSave(release.id, trailerUrlDraft); setEditingTrailerUrl(false) }}
+                      className="text-xs text-white/50 hover:text-white transition px-2 py-1.5 border border-white/10 rounded-lg">
+                      Save
+                    </button>
+                    <button onClick={() => setEditingTrailerUrl(false)} className="text-xs text-white/25 hover:text-white/50 transition">
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setTrailerUrlDraft(''); setEditingTrailerUrl(true) }}
+                    className="text-xs border border-dashed border-white/15 rounded-lg px-3 py-1.5 text-white/30 hover:border-white/30 hover:text-white/60 transition"
+                  >
+                    + Add trailer URL
+                  </button>
+                )}
+              </div>
+            )}
+
+            {showImport && videoUrl && (
               <div className="mt-3 space-y-3">
                 <p className="text-xs text-white/25 leading-relaxed">
                   AI-suggested moments from this video worth breaking down. Click "Analyze" to download the clip and run a full cinematography breakdown.
@@ -948,13 +1013,25 @@ function ClipDrawer({
                   <p className="text-xs text-white/20 py-2">Generating suggestions...</p>
                 ) : suggestedClips.length > 0 ? (
                   <div className="space-y-2">
+                    <p className="text-[10px] text-white/15">{suggestedClips.length} suggested clips — scroll for more</p>
+                    <div className="max-h-[420px] overflow-y-auto space-y-2 pr-1">
                     {suggestedClips.map(clip => {
                       const isAnalyzing = analyzingClips.has(clip.title)
                       const isAnalyzed = analyzedClipTitles.has(clip.title)
                       const clipError = analyzeErrors[clip.title]
+                      const isPreviewing = previewingClip === clip.title
                       return (
                         <div key={clip.title} className="border border-white/8 rounded-lg p-3">
                           <div className="flex items-start justify-between gap-2">
+                            <button
+                              onClick={() => setPreviewingClip(isPreviewing ? null : clip.title)}
+                              className="shrink-0 w-20 h-12 rounded-lg overflow-hidden bg-white/5 flex items-center justify-center group hover:bg-white/8 transition"
+                              title={isPreviewing ? 'Close preview' : 'Preview this clip'}
+                            >
+                              <span className={`text-lg transition ${isPreviewing ? 'text-white/70' : 'text-white/25 group-hover:text-white/50'}`}>
+                                {isPreviewing ? '✕' : '▶'}
+                              </span>
+                            </button>
                             <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium text-white/70 leading-snug">{clip.title}</p>
                               <p className="text-[10px] text-white/30 mt-0.5 tabular-nums">
@@ -979,9 +1056,15 @@ function ClipDrawer({
                               </button>
                             )}
                           </div>
+                          {isPreviewing && (
+                            <div className="mt-3 aspect-video w-full rounded-lg overflow-hidden bg-black">
+                              <YoutubeEmbed url={videoUrl} startTime={clip.startTime} endTime={clip.endTime} onReady={play => play()} />
+                            </div>
+                          )}
                         </div>
                       )
                     })}
+                    </div>
                     <button
                       onClick={suggestClips}
                       disabled={suggesting}
@@ -1023,7 +1106,7 @@ function ClipDrawer({
             <p className="text-white/20 text-sm text-center py-12">Loading shots...</p>
           ) : visible.length === 0 ? (
             <p className="text-white/20 text-sm text-center py-12">
-              {search ? 'No shots match that search.' : sourceUrl ? 'No shots analyzed from this video yet. Use Import & Analyze above.' : 'Add a video URL above to start importing clips.'}
+              {search ? 'No shots match that search.' : videoUrl ? 'No shots analyzed from this video yet. Use Import & Analyze above.' : 'Add a source link above, then a trailer URL in Import & Analyze, to start importing clips.'}
             </p>
           ) : visible.map(shot => {
             const bd = shot.breakdowns?.[0]
@@ -1076,9 +1159,17 @@ function ClipDrawer({
                           {shot.start_time}{shot.end_time ? ` – ${shot.end_time}` : ''}
                         </span>
                       )}
-                      {camera && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/30">{camera}</span>}
-                      {lighting && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 capitalize">{lighting}</span>}
-                      {movement && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 capitalize">{movement}</span>}
+                      {shot.status === 'failed' ? (
+                        <Link href={`/shot/${shot.id}`} target="_blank" className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition">
+                          ⚠ Analysis failed — open to retry
+                        </Link>
+                      ) : (
+                        <>
+                          {camera && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/30">{camera}</span>}
+                          {lighting && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 capitalize">{lighting}</span>}
+                          {movement && <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-white/30 capitalize">{movement}</span>}
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1228,7 +1319,7 @@ export default function ReleasesPage() {
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [showBuzzInfo, setShowBuzzInfo] = useState(false)
-  const [activeRelease, setActiveRelease] = useState<Release | null>(null)
+  const [activeReleaseId, setActiveReleaseId] = useState<string | null>(null)
   const [releases, setReleases] = useState<Release[]>([])
   const [releasesLoading, setReleasesLoading] = useState(true)
   const [verifyStatus, setVerifyStatus] = useState<Record<string, 'idle' | 'checking' | 'done'>>({})
@@ -1265,12 +1356,18 @@ export default function ReleasesPage() {
     else { setSortKey(key); setSortDir(key === 'buzz' ? 'desc' : 'asc') }
   }
 
-  const closeDrawer = useCallback(() => setActiveRelease(null), [])
+  const closeDrawer = useCallback(() => setActiveReleaseId(null), [])
 
   const saveSourceUrl = useCallback(async (id: string, url: string) => {
     const trimmed = url.trim()
     setReleases(prev => prev.map(r => r.id === id ? { ...r, sourceUrl: trimmed } : r))
     await supabase.from('releases').update({ source_url: trimmed }).eq('id', id)
+  }, [])
+
+  const saveTrailerUrl = useCallback(async (id: string, url: string) => {
+    const trimmed = url.trim()
+    setReleases(prev => prev.map(r => r.id === id ? { ...r, trailerUrl: trimmed } : r))
+    await supabase.from('releases').update({ trailer_url: trimmed }).eq('id', id)
   }, [])
 
   const saveDateOverride = useCallback(async (id: string, date: string) => {
@@ -1298,7 +1395,7 @@ export default function ReleasesPage() {
           currentDate: currentDateOverride ?? release.releaseDate,
         }),
       })
-      const data: { date: string | null; confidence: Confidence; note: string; sourceUrl: string | null; released: boolean } = await res.json()
+      const data: { date: string | null; confidence: Confidence; note: string; sourceUrl: string | null; trailerUrl: string | null; released: boolean } = await res.json()
       const patch: Partial<Release> = {}
       const dbPatch: Record<string, unknown> = {}
       if (data.date && data.confidence === 'confirmed') {
@@ -1313,6 +1410,13 @@ export default function ReleasesPage() {
         // the source link itself (e.g. an IMDB title page) was found cleanly.
         patch.sourceUrl = data.sourceUrl
         dbPatch.source_url = data.sourceUrl
+      }
+      if (data.trailerUrl) {
+        // Kept separate from sourceUrl: for films/shows sourceUrl is the IMDB
+        // rating page, but Import & Analyze needs an actual downloadable/
+        // embeddable YouTube URL, which IMDB pages cannot provide.
+        patch.trailerUrl = data.trailerUrl
+        dbPatch.trailer_url = data.trailerUrl
       }
       if (data.note) {
         patch.verifyNote = data.note
@@ -1361,11 +1465,24 @@ export default function ReleasesPage() {
         dbPatch.buzz = data.buzzScore
         dbPatch.buzz_delta = data.buzzDelta ?? null
       }
-      // Video URL takes priority for music videos, otherwise use as source link
-      const newUrl = data.videoUrl ?? data.sourceLinkUrl
-      if (newUrl && !release.sourceUrl) {
-        patch.sourceUrl = newUrl
-        dbPatch.source_url = newUrl
+      // Music videos: the video URL IS the source link (same YouTube page).
+      // Films/shows: keep them separate — sourceUrl is the IMDB rating page
+      // (or a fallback site/article), trailerUrl is the playable YouTube
+      // trailer Import & Analyze actually needs.
+      if (release.type === 'music_video') {
+        if (data.videoUrl && !release.sourceUrl) {
+          patch.sourceUrl = data.videoUrl
+          dbPatch.source_url = data.videoUrl
+        }
+      } else {
+        if (data.sourceLinkUrl && !release.sourceUrl) {
+          patch.sourceUrl = data.sourceLinkUrl
+          dbPatch.source_url = data.sourceLinkUrl
+        }
+        if (data.videoUrl && !release.trailerUrl) {
+          patch.trailerUrl = data.videoUrl
+          dbPatch.trailer_url = data.videoUrl
+        }
       }
       if (Object.keys(patch).length) {
         setReleases(prev => prev.map(r => r.id === release.id ? { ...r, ...patch } : r))
@@ -1472,6 +1589,10 @@ export default function ReleasesPage() {
   const releasedCount = filtered.filter(r => r.releaseDate <= TODAY).length
   const estimatedCount = filtered.filter(r => r.isEstimated).length
   const favoriteCount = releases.filter(r => r.isFavorite).length
+  // Derived (not its own state) so the open drawer always reflects live
+  // updates — research, favoriting, trailer URL saves, etc. — instead of a
+  // frozen snapshot taken at the moment the row was clicked.
+  const activeRelease = releases.find(r => r.id === activeReleaseId) ?? null
 
   return (
     <main className="min-h-screen bg-black text-white">
@@ -1578,7 +1699,7 @@ export default function ReleasesPage() {
 
           {filtered.map(release => {
             const released = release.releaseDate <= TODAY
-            const isActive = activeRelease?.id === release.id
+            const isActive = activeReleaseId === release.id
             const effectiveSourceUrl = release.sourceUrl ?? (release.type !== 'music_video' ? getFallbackUrl(release) : '')
             const resStatus = researchStatus[release.id] ?? 'idle'
 
@@ -1587,8 +1708,8 @@ export default function ReleasesPage() {
                 key={release.id}
                 role="button"
                 tabIndex={0}
-                onClick={() => setActiveRelease(isActive ? null : release)}
-                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setActiveRelease(isActive ? null : release) }}
+                onClick={() => setActiveReleaseId(isActive ? null : release.id)}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') setActiveReleaseId(isActive ? null : release.id) }}
                 className={`w-full cursor-pointer text-left grid grid-cols-[minmax(180px,1fr)_90px_150px_150px] gap-4 items-start px-4 py-3.5 rounded-xl border transition ${
                   isActive
                     ? released ? 'border-amber-400/40 bg-amber-500/10' : 'border-white/30 bg-white/[0.06]'
@@ -1669,6 +1790,7 @@ export default function ReleasesPage() {
           userId={user.id}
           onClose={closeDrawer}
           onSourceUrlSave={saveSourceUrl}
+          onTrailerUrlSave={saveTrailerUrl}
         />
       )}
     </main>

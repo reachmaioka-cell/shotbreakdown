@@ -14,6 +14,7 @@ export type DiscoveredRelease = {
   buzzDelta: number | null
   description: string
   sourceUrl: string | null
+  trailerUrl: string | null
   isEstimated: boolean
   confirmedSource: string | null
 }
@@ -35,10 +36,13 @@ ${exclusionList || '(none yet)'}
 - Prioritize surprise drops and very recent news over things that were already widely known weeks ago.
 - Return at most 12 candidates, ranked by how significant/trending they are right now.
 
-For sourceUrl:
-- MUSIC VIDEOS: the official YouTube video URL if you found it, else null.
-- FILMS/SHOWS that have already released: search for and return the DIRECT IMDB title page — the form https://www.imdb.com/title/ttXXXXXXX/ for that specific title, never a generic browse/search page and never a homepage like imdb.com/browse or rottentomatoes.com/browse. This is the page that shows its rating. If you can't find that specific title page, use an official site or trade article about that title specifically instead — never a generic category/browse page.
-- FILMS/SHOWS not yet released: an official trailer URL, or an IMDB page if one already exists, else null.
+There are two separate URL fields — do not mix them up:
+- "sourceUrl": the link a human clicks to read about / rate the title.
+  - MUSIC VIDEOS: same as trailerUrl (the YouTube video itself).
+  - FILMS/SHOWS: the DIRECT IMDB title page — the form https://www.imdb.com/title/ttXXXXXXX/ for that specific title, never a generic browse/search page. This is the page that shows its rating. If you can't find that specific title page, use an official site or trade article about that title specifically instead.
+- "trailerUrl": a URL that a program can actually download/embed a playable video from.
+  - MUSIC VIDEOS: the official YouTube video URL.
+  - FILMS/SHOWS: the official trailer's YouTube URL (studios almost always post trailers to YouTube — search for "<title> official trailer"). This must be a real youtube.com/watch or youtu.be URL, not an IMDB link (IMDB video pages are not embeddable/downloadable). Null if you can't find one.
 
 For each candidate return an object:
 {
@@ -52,6 +56,7 @@ For each candidate return an object:
   "buzzDelta": number or null (positive = rising vs prior month),
   "description": "1-2 sentences with concrete detail (director/artist, cast, concept)",
   "sourceUrl": "URL as described above, or null",
+  "trailerUrl": "youtube.com/watch or youtu.be URL as described above, or null",
   "isEstimated": true or false (false only if you found a reputable confirmed source),
   "confirmedSource": "URL" or null
 }

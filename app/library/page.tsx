@@ -414,7 +414,11 @@ export default function LibraryPage() {
                             <span className="text-xs px-2 py-1 rounded-full bg-white/5 text-white/40 capitalize">{shot.platform}</span>
                           )}
                           {tab === 'mine' && (
-                            <span className={`text-xs px-2 py-1 rounded-full capitalize ${shot.status === 'analyzed' ? 'bg-green-500/10 text-green-400' : 'bg-white/5 text-white/40'}`}>
+                            <span className={`text-xs px-2 py-1 rounded-full capitalize ${
+                              shot.status === 'analyzed' ? 'bg-green-500/10 text-green-400'
+                              : shot.status === 'failed' ? 'bg-red-500/10 text-red-400'
+                              : 'bg-white/5 text-white/40'
+                            }`}>
                               {shot.status}
                             </span>
                           )}

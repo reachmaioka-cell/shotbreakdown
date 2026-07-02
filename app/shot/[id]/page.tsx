@@ -6,9 +6,11 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { useParams, useRouter } from 'next/navigation'
 import NavBar from '@/app/_components/NavBar'
+import { YoutubeEmbed } from '@/app/_components/YoutubeEmbed'
 import type { User } from '@supabase/supabase-js'
 
 const FREE_LIMIT = 10
+const ADMIN_EMAIL = 'reachmaioka@gmail.com'
 const DISCIPLINES = ['Director', 'DP', 'Gaffer', 'Editor', 'Colorist', 'VFX Artist', 'Producer']
 
 // Safe string coercion for unknown values from Supabase JSON fields
@@ -50,15 +52,6 @@ const ROLE_PRIMARY: Record<string, SectionKey[]> = {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function parseTimecodeToSecs(t: string | null): number {
-  if (!t) return 0
-  const [m, s] = t.split(':').map(Number)
-  return (m || 0) * 60 + (s || 0)
-}
-function extractYoutubeId(url: string): string | null {
-  const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&?/]+)/)
-  return m ? m[1] : null
-}
 
 // ─── Instagram embed ──────────────────────────────────────────────────────────
 
@@ -111,83 +104,6 @@ function InstagramEmbed({ url, thumbnailUrl }: { url: string; thumbnailUrl: stri
   )
 }
 
-// ─── YouTube embed ────────────────────────────────────────────────────────────
-
-type YTPlayer = {
-  seekTo(s: number, a: boolean): void
-  playVideo(): void; pauseVideo(): void; getCurrentTime(): number; destroy(): void
-}
-declare global {
-  interface Window {
-    YT?: { Player: new (el: string | HTMLElement, opts: object) => YTPlayer }
-    onYouTubeIframeAPIReady?: () => void
-  }
-}
-
-function YoutubeEmbed({ url, startTime, endTime, onReady }: {
-  url: string; startTime: string | null; endTime: string | null
-  onReady?: (playClip: () => void) => void
-}) {
-  const containerId = useRef(`yt-${Math.random().toString(36).slice(2, 9)}`)
-  const playerRef = useRef<YTPlayer | null>(null)
-  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const onReadyRef = useRef(onReady)
-  onReadyRef.current = onReady
-
-  const videoId = extractYoutubeId(url)
-  const startSecs = parseTimecodeToSecs(startTime)
-  const endSecs = parseTimecodeToSecs(endTime)
-
-  useEffect(() => {
-    if (!videoId) return
-    const init = () => {
-      playerRef.current = new window.YT!.Player(containerId.current, {
-        videoId, width: '100%', height: '100%',
-        playerVars: { start: startSecs, rel: 0, modestbranding: 1 },
-        events: {
-          onReady: () => {
-            onReadyRef.current?.(() => {
-              playerRef.current?.seekTo(startSecs, true)
-              playerRef.current?.playVideo()
-            })
-          },
-          onStateChange: (e: { data: number }) => {
-            if (e.data === 1) {
-              if (tickRef.current) clearInterval(tickRef.current)
-              tickRef.current = setInterval(() => {
-                const t = playerRef.current?.getCurrentTime() ?? 0
-                if (endSecs > startSecs && t >= endSecs) {
-                  playerRef.current?.pauseVideo()
-                  clearInterval(tickRef.current!); tickRef.current = null
-                }
-              }, 200)
-            } else {
-              if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null }
-            }
-          },
-        },
-      })
-    }
-    if (window.YT?.Player) {
-      init()
-    } else {
-      const prev = window.onYouTubeIframeAPIReady
-      window.onYouTubeIframeAPIReady = () => { prev?.(); init() }
-      if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-        const s = document.createElement('script')
-        s.src = 'https://www.youtube.com/iframe_api'
-        document.head.appendChild(s)
-      }
-    }
-    return () => {
-      if (tickRef.current) clearInterval(tickRef.current)
-      playerRef.current?.destroy()
-    }
-  }, [videoId, startSecs, endSecs])
-
-  if (!videoId) return null
-  return <div id={containerId.current} className="w-full h-full" />
-}
 
 // ─── Lighting diagram ─────────────────────────────────────────────────────────
 
@@ -508,14 +424,14 @@ export default function ShotPage() {
   }, [])
 
   const resetAnalyzing = async () => {
-    await supabase.from('shots').update({ status: 'analyzed' }).eq('id', id)
-    setReanalyzeError('')
+    await supabase.from('shots').update({ status: 'failed' }).eq('id', id)
+    setReanalyzeError('Taking too long — try analyzing again.')
     setShowReanalyzeForm(false)
     await loadData()
   }
 
   useEffect(() => {
-    if (!shot || shot.status === 'analyzed') return
+    if (!shot || shot.status === 'analyzed' || shot.status === 'failed') return
     let attempts = 0
     const MAX_ATTEMPTS = 30
     const interval = setInterval(async () => {
@@ -523,8 +439,8 @@ export default function ShotPage() {
       if (attempts >= MAX_ATTEMPTS) {
         clearInterval(interval)
         setReanalyzeError('Analysis timed out — please try again.')
-        setShot(prev => prev ? { ...prev, status: 'analyzed' } : null)
-        await loadData()
+        setShot(prev => prev ? { ...prev, status: 'failed' } : null)
+        await supabase.from('shots').update({ status: 'failed' }).eq('id', id)
         return
       }
       const { data: s } = await supabase.from('shots').select('*').eq('id', id).single()
@@ -533,6 +449,8 @@ export default function ShotPage() {
       if (s.status === 'analyzed') {
         const { data: b } = await supabase.from('breakdowns').select('*').eq('shot_id', id).single()
         if (b) setBreakdown(b)
+        clearInterval(interval)
+      } else if (s.status === 'failed') {
         clearInterval(interval)
       }
     }, 3000)
@@ -672,15 +590,19 @@ export default function ShotPage() {
               <div className="flex gap-2 flex-wrap items-center">
                 {shot.platform && <span className="text-xs px-2 py-1 rounded-full bg-white/5 text-white/35 capitalize">{shot.platform}</span>}
                 {shot.start_time && shot.end_time && <span className="text-xs px-2 py-1 rounded-full bg-white/5 text-white/35">{shot.start_time} – {shot.end_time}</span>}
-                <span className={`text-xs px-2 py-1 rounded-full ${shot.status === 'analyzed' ? 'bg-green-500/10 text-green-400' : 'bg-white/5 text-white/30'}`}>
-                  {shot.status === 'analyzed' ? 'Breakdown ready' : 'Analyzing...'}
+                <span className={`text-xs px-2 py-1 rounded-full ${
+                  shot.status === 'analyzed' ? 'bg-green-500/10 text-green-400'
+                  : shot.status === 'failed' ? 'bg-red-500/10 text-red-400'
+                  : 'bg-white/5 text-white/30'
+                }`}>
+                  {shot.status === 'analyzed' ? 'Breakdown ready' : shot.status === 'failed' ? 'Analysis failed' : 'Analyzing...'}
                 </span>
                 {reanalyzeError && <span className="text-xs text-red-400">{reanalyzeError}</span>}
               </div>
             </div>
 
             {/* Analyzing spinner */}
-            {shot.status !== 'analyzed' && (
+            {shot.status !== 'analyzed' && shot.status !== 'failed' && (
               <div className="border border-white/10 rounded-xl p-8 text-center text-white/30">
                 <div className="flex items-center justify-center gap-2 mb-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-white/30 animate-bounce" style={{ animationDelay: '0ms' }} />
@@ -690,6 +612,15 @@ export default function ShotPage() {
                 <p className="text-sm mb-4">Generating breakdown — this page updates automatically.</p>
                 <button onClick={resetAnalyzing} className="text-xs text-white/25 hover:text-white/60 transition underline underline-offset-2">
                   Taking too long? Reset
+                </button>
+              </div>
+            )}
+
+            {shot.status === 'failed' && (
+              <div className="border border-red-500/20 bg-red-500/[0.03] rounded-xl p-8 text-center">
+                <p className="text-sm text-red-400/80 mb-4">Analysis failed — the AI response was malformed or the request timed out.</p>
+                <button onClick={reanalyze} className="text-xs px-4 py-2 rounded-full border border-white/15 text-white/60 hover:border-white/30 hover:text-white transition">
+                  Try again
                 </button>
               </div>
             )}
@@ -886,7 +817,7 @@ export default function ShotPage() {
                 {shot.focus && <p className="text-xs text-white/30 mt-2 italic">"{shot.focus}"</p>}
               </div>
             )}
-            {user && (
+            {user && user.email !== ADMIN_EMAIL && (
               <div className="border border-white/10 rounded-xl p-5">
                 {atLimit ? (
                   <>

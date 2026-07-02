@@ -226,7 +226,7 @@ async function analyzeVideoWithGemini(fileUri: string, prompt: string): Promise<
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      generationConfig: { maxOutputTokens: 8192, temperature: 0.2 },
+      generationConfig: { maxOutputTokens: 32768, temperature: 0.2 },
     })
     const result = await model.generateContent([
       { fileData: { mimeType: 'video/mp4', fileUri } },
@@ -250,8 +250,8 @@ async function cleanupGeminiFile(fileUri: string) {
 
 // ─── Status helpers ──────────────────────────────────────────────────────────
 
-async function resetStatus(shotId: string) {
-  await supabase.from('shots').update({ status: 'analyzed' }).eq('id', shotId)
+async function markFailed(shotId: string) {
+  await supabase.from('shots').update({ status: 'failed' }).eq('id', shotId)
 }
 
 // ─── Prompt builders ─────────────────────────────────────────────────────────
@@ -510,13 +510,13 @@ export async function POST(req: NextRequest) {
 
       const message = await anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 5000,
+        max_tokens: 8192,
         messages: [{ role: 'user', content: messageContent }],
       })
 
       const content = message.content[0]
       if (content.type !== 'text') {
-        await resetStatus(shotId)
+        await markFailed(shotId)
         return NextResponse.json({ error: 'Unexpected AI response type' }, { status: 500 })
       }
       rawText = content.text
@@ -531,7 +531,7 @@ export async function POST(req: NextRequest) {
     const jsonMatch = stripped.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
       console.error('No JSON in response:', stripped.slice(0, 300))
-      await resetStatus(shotId)
+      await markFailed(shotId)
       return NextResponse.json({ error: 'AI did not return valid JSON — try again' }, { status: 500 })
     }
 
@@ -542,7 +542,7 @@ export async function POST(req: NextRequest) {
       console.error('JSON parse error:', e)
       console.error('Raw response length:', rawText?.length, '| JSON match length:', jsonMatch[0].length)
       console.error('JSON tail (last 200 chars):', jsonMatch[0].slice(-200))
-      await resetStatus(shotId)
+      await markFailed(shotId)
       return NextResponse.json({ error: 'AI response was malformed — try again' }, { status: 500 })
     }
 
@@ -563,7 +563,7 @@ export async function POST(req: NextRequest) {
 
     if (insertError) {
       console.error('BREAKDOWN UPSERT ERROR:', JSON.stringify(insertError))
-      await resetStatus(shotId)
+      await markFailed(shotId)
       return NextResponse.json({ error: 'Failed to save breakdown: ' + insertError.message }, { status: 500 })
     }
 
@@ -574,7 +574,7 @@ export async function POST(req: NextRequest) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     console.error('ANALYZE ERROR:', msg)
-    if (shotId) await resetStatus(shotId)
+    if (shotId) await markFailed(shotId)
     return NextResponse.json({ error: msg }, { status: 500 })
   } finally {
     // Clean up temp video file

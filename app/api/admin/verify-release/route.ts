@@ -11,6 +11,7 @@ type VerifyResult = {
   confidence: 'confirmed' | 'estimated' | 'unknown'
   note: string
   sourceUrl: string | null
+  trailerUrl: string | null
   released: boolean
 }
 
@@ -58,16 +59,19 @@ async function verifyMusicVideo(title: string, artist: string | undefined): Prom
       confidence: 'unknown',
       note: 'Not found on YouTube yet — likely still upcoming',
       sourceUrl: null,
+      trailerUrl: null,
       released: false,
     }
   }
 
   const iso = toIsoDate(best.uploadDate)
+  const url = `https://www.youtube.com/watch?v=${best.id}`
   return {
     date: iso,
     confidence: iso ? 'confirmed' : 'unknown',
     note: `Found on YouTube: "${best.title}" — ${best.channel}`,
-    sourceUrl: `https://www.youtube.com/watch?v=${best.id}`,
+    sourceUrl: url,
+    trailerUrl: url,
     released: true,
   }
 }
@@ -82,10 +86,14 @@ Currently listed release date: ${currentDate}
 
 Search for recent news to confirm or correct the date. If you find a reliable, dated source, use it. If you cannot find confirmation either way, say so honestly rather than guessing.
 
-For the source URL, in priority order:
+There are two separate URL fields to find — do not mix them up:
+
+For "sourceUrl" (the link a human clicks to read about / rate the title), in priority order:
 1. If it has released, find its IMDB page and return the DIRECT title URL — the form https://www.imdb.com/title/ttXXXXXXX/, not a search or "/find" URL. This is the page showing its rating, and is the highest priority whenever you can find it.
 2. If you can't find a specific IMDB title page, an official site, studio/distributor page, or major trade publication article is fine instead.
 3. If it hasn't released yet, an IMDB page is still preferred if one already exists (even without a rating); otherwise use an official site or trade article.
+
+For "trailerUrl" (a URL a program can actually download/embed a playable video from): search for "<title> official trailer" and find its YouTube URL — studios almost always post trailers to YouTube. This must be a real youtube.com/watch or youtu.be URL, never an IMDB link (IMDB video pages cannot be downloaded or embedded programmatically). Null if you can't find one.
 
 After searching, respond with ONLY a JSON object (no other text) in this exact format:
 {
@@ -93,6 +101,7 @@ After searching, respond with ONLY a JSON object (no other text) in this exact f
   "confidence": "confirmed" | "estimated" | "unknown",
   "note": "brief source or reason",
   "sourceUrl": "URL or null",
+  "trailerUrl": "youtube.com/watch or youtu.be URL, or null",
   "released": true or false
 }`
 
@@ -125,7 +134,7 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     console.error('verify-release failed:', String(e).slice(0, 300))
     return NextResponse.json(
-      { date: null, confidence: 'unknown', note: 'Verification failed', sourceUrl: null, released: false },
+      { date: null, confidence: 'unknown', note: 'Verification failed', sourceUrl: null, trailerUrl: null, released: false },
       { status: 500 }
     )
   }

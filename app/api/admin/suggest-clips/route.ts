@@ -17,6 +17,7 @@ function tcToSecs(t: string): number {
 }
 
 async function suggestFromVideo(videoUrl: string, label: string, typeLabel: string, genre: string, description: string): Promise<SuggestedClip[]> {
+  const sourceLabel = typeLabel === 'music video' ? 'video' : 'trailer'
   const tmpPath = path.join(os.tmpdir(), `suggest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.mp4`)
   let geminiFileUri: string | null = null
   try {
@@ -24,10 +25,10 @@ async function suggestFromVideo(videoUrl: string, label: string, typeLabel: stri
       downloadClip(videoUrl, null, null, tmpPath),
       getVideoDuration(videoUrl),
     ])
-    if (!downloaded) throw new Error('Could not download the trailer — check the trailer URL is a valid, public YouTube link')
+    if (!downloaded) throw new Error(`Could not download the ${sourceLabel} — check the URL is a valid, public YouTube link, or try again`)
 
     geminiFileUri = await uploadToGeminiAndWait(tmpPath)
-    if (!geminiFileUri) throw new Error('Could not upload the trailer for analysis')
+    if (!geminiFileUri) throw new Error(`Could not upload the ${sourceLabel} for analysis — try again`)
 
     const durationNote = duration
       ? `Total video duration: ${Math.floor(duration / 60)}:${String(Math.round(duration % 60)).padStart(2, '0')} (${Math.round(duration)} seconds). Every timestamp must be less than this.`
@@ -72,9 +73,10 @@ Return ONLY a JSON array of exactly 30 objects, no other text:
 
 export async function POST(req: NextRequest) {
   const { title, artist, type, genre, description, videoUrl } = await req.json()
+  const sourceLabel = type === 'music_video' ? 'video' : 'trailer'
 
   if (!videoUrl) {
-    return NextResponse.json({ clips: [], error: 'No trailer URL for this release yet' }, { status: 400 })
+    return NextResponse.json({ clips: [], error: `No ${sourceLabel} URL for this release yet` }, { status: 400 })
   }
 
   const label = artist ? `"${title}" by ${artist}` : `"${title}"`
@@ -85,7 +87,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ clips })
   } catch (e) {
     console.error('suggest-clips failed:', String(e).slice(0, 300))
-    const message = e instanceof Error ? e.message : 'Could not analyze the trailer — try again'
+    const message = e instanceof Error ? e.message : `Could not analyze the ${sourceLabel} — try again`
     return NextResponse.json({ clips: [], error: message }, { status: 500 })
   }
 }

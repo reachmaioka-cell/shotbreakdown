@@ -758,12 +758,15 @@ function ClipDrawer({
     return () => window.removeEventListener('keydown', handler)
   }, [onClose])
 
-  const ensureCollection = async (): Promise<{ id: string | null; error: string | null }> => {
+  const ensureCollection = async (coverUrl?: string | null): Promise<{ id: string | null; error: string | null }> => {
     if (collectionId) return { id: collectionId, error: null }
     const title = release.artist ? `${release.title} — ${release.artist}` : release.title
+    // Prefer a real extracted frame from the specific featured clip (no
+    // studio branding/text baked in) over the trailer's YouTube thumbnail,
+    // which is a designed graphic ("OFFICIAL TRAILER" + logo), not a still.
     const { data, error } = await supabase
       .from('collections')
-      .insert({ title, type: release.type, description: release.description, is_featured: true, cover_url: trailerThumbnail })
+      .insert({ title, type: release.type, description: release.description, is_featured: true, cover_url: coverUrl ?? null })
       .select().single()
     if (error) {
       console.error('Failed to create collection:', error.message)
@@ -776,7 +779,7 @@ function ClipDrawer({
 
   const addToFeatured = async (shot: DrawerShot) => {
     setWorking(shot.id + '-feature')
-    const { id: colId, error } = await ensureCollection()
+    const { id: colId, error } = await ensureCollection(shot.thumbnail_url)
     if (!colId) {
       setAnalyzeErrors(prev => ({ ...prev, [shot.id]: error ?? 'Could not create Featured collection' }))
       setWorking(null)
@@ -1025,7 +1028,7 @@ function ClipDrawer({
                 </p>
 
                 {suggesting ? (
-                  <p className="text-xs text-white/20 py-2">Downloading and watching the trailer to find real moments worth breaking down — this can take a minute...</p>
+                  <p className="text-xs text-white/20 py-2">Downloading and watching the {release.type === 'music_video' ? 'video' : 'trailer'} to find real moments worth breaking down — this can take a minute...</p>
                 ) : suggestedClips.length > 0 ? (
                   <div className="space-y-2">
                     <p className="text-[10px] text-white/15">{suggestedClips.length} suggested clips — scroll for more</p>

@@ -763,7 +763,7 @@ function ClipDrawer({
     const title = release.artist ? `${release.title} — ${release.artist}` : release.title
     const { data, error } = await supabase
       .from('collections')
-      .insert({ title, type: release.type, description: release.description, is_featured: false })
+      .insert({ title, type: release.type, description: release.description, is_featured: true })
       .select().single()
     if (error) {
       console.error('Failed to create collection:', error.message)

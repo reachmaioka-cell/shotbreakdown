@@ -713,6 +713,7 @@ function ClipDrawer({
   // Import & Analyze
   const [suggestedClips, setSuggestedClips] = useState<SuggestedClip[]>([])
   const [suggesting, setSuggesting] = useState(false)
+  const [suggestError, setSuggestError] = useState<string | null>(null)
   const [analyzingClips, setAnalyzingClips] = useState<Set<string>>(new Set())
   const [analyzeErrors, setAnalyzeErrors] = useState<Record<string, string>>({})
   const [analyzedClipTitles, setAnalyzedClipTitles] = useState<Set<string>>(new Set())
@@ -797,6 +798,7 @@ function ClipDrawer({
   const suggestClips = async () => {
     setSuggesting(true)
     setSuggestedClips([])
+    setSuggestError(null)
     try {
       const res = await fetch('/api/admin/suggest-clips', {
         method: 'POST',
@@ -807,10 +809,12 @@ function ClipDrawer({
           type: release.type,
           genre: release.genre,
           description: release.description,
+          videoUrl,
         }),
       })
       const data = await res.json()
       setSuggestedClips(data.clips ?? [])
+      if (!data.clips?.length) setSuggestError(data.error ?? 'Could not generate suggestions — try again')
     } finally {
       setSuggesting(false)
     }
@@ -1010,7 +1014,7 @@ function ClipDrawer({
                 </p>
 
                 {suggesting ? (
-                  <p className="text-xs text-white/20 py-2">Generating suggestions...</p>
+                  <p className="text-xs text-white/20 py-2">Downloading and watching the trailer to find real moments worth breaking down — this can take a minute...</p>
                 ) : suggestedClips.length > 0 ? (
                   <div className="space-y-2">
                     <p className="text-[10px] text-white/15">{suggestedClips.length} suggested clips — scroll for more</p>
@@ -1074,13 +1078,18 @@ function ClipDrawer({
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={suggestClips}
-                    disabled={suggesting}
-                    className="text-xs border border-dashed border-white/15 rounded-lg px-3 py-2 text-white/30 hover:border-white/30 hover:text-white/60 transition w-full disabled:opacity-30"
-                  >
-                    AI Suggest Clips
-                  </button>
+                  <div>
+                    {suggestError && (
+                      <p className="text-[10px] text-red-400/70 mb-2 leading-snug">⚠ {suggestError}</p>
+                    )}
+                    <button
+                      onClick={suggestClips}
+                      disabled={suggesting}
+                      className="text-xs border border-dashed border-white/15 rounded-lg px-3 py-2 text-white/30 hover:border-white/30 hover:text-white/60 transition w-full disabled:opacity-30"
+                    >
+                      {suggestError ? 'Retry — AI Suggest Clips' : 'AI Suggest Clips'}
+                    </button>
+                  </div>
                 )}
               </div>
             )}

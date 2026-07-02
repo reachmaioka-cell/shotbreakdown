@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
-
-const client = new Anthropic()
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { downloadClip, getVideoDuration, uploadToGeminiAndWait, analyzeVideoWithGemini, cleanupGeminiFile } from '@/lib/video-analysis'
 
 export type SuggestedClip = {
   title: string
@@ -10,19 +11,36 @@ export type SuggestedClip = {
   focus: string
 }
 
-export async function POST(req: NextRequest) {
-  const { title, artist, type, genre, description } = await req.json()
+function tcToSecs(t: string): number {
+  const [m, s] = t.split(':').map(Number)
+  return (m || 0) * 60 + (s || 0)
+}
 
-  const label = artist ? `"${title}" by ${artist}` : `"${title}"`
-  const typeLabel = type === 'music_video' ? 'music video' : type === 'show' ? 'TV series' : 'film'
+async function suggestFromVideo(videoUrl: string, label: string, typeLabel: string, genre: string, description: string): Promise<SuggestedClip[]> {
+  const tmpPath = path.join(os.tmpdir(), `suggest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.mp4`)
+  let geminiFileUri: string | null = null
+  try {
+    const [downloaded, duration] = await Promise.all([
+      downloadClip(videoUrl, null, null, tmpPath),
+      getVideoDuration(videoUrl),
+    ])
+    if (!downloaded) throw new Error('Could not download the trailer — check the trailer URL is a valid, public YouTube link')
 
-  const prompt = `You are a cinematography analyst helping an admin choose clip moments to break down from a ${typeLabel}.
+    geminiFileUri = await uploadToGeminiAndWait(tmpPath)
+    if (!geminiFileUri) throw new Error('Could not upload the trailer for analysis')
+
+    const durationNote = duration
+      ? `Total video duration: ${Math.floor(duration / 60)}:${String(Math.round(duration % 60)).padStart(2, '0')} (${Math.round(duration)} seconds). Every timestamp must be less than this.`
+      : ''
+    const prompt = `You are a cinematography analyst helping an admin choose clip moments to break down from a ${typeLabel}.
 
 ${typeLabel === 'music video' ? 'Music Video' : 'Production'}: ${label}
 Genre: ${genre}
 Description: ${description}
+${durationNote}
 
-Identify 30 specific moments that would yield rich cinematography analysis. For each moment:
+You are watching the actual video. Identify 30 specific moments from what you are actually seeing that would yield rich cinematography analysis — grounded in the real content, describing what actually happens at each timestamp. For each moment:
+- Timestamps MUST fall within the video's actual duration and match what really happens at that point in the footage.
 - Default clip duration is ~5 seconds (e.g. "1:14" to "1:19")
 - Make the clip longer when:
   • The moment is a long take with no cuts — capture the full take
@@ -31,25 +49,43 @@ Identify 30 specific moments that would yield rich cinematography analysis. For 
   • An establishing or transitional shot that has meaningful duration
 - Focus areas: camera work, lighting setups, color grading, VFX layers, editing rhythm, production design, movement rigs, performance + framing, directorial choices
 
-Use your specific knowledge of this ${typeLabel} if you know it. If you don't, base timestamps and focus areas on the genre and description — make educated, confident suggestions.
-
 Return ONLY a JSON array of exactly 30 objects, no other text:
 [
-  { "title": "short descriptive name for this moment", "startTime": "0:00", "endTime": "0:05", "focus": "what specifically to analyze and why it's cinematographically interesting" }
+  { "title": "short descriptive name for this moment", "startTime": "0:00", "endTime": "0:05", "focus": "what specifically happens here and why it's cinematographically interesting" }
 ]`
 
-  try {
-    const message = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 4000,
-      messages: [{ role: 'user', content: prompt }],
-    })
+    const rawText = await analyzeVideoWithGemini(geminiFileUri, prompt, 8192)
+    if (!rawText) throw new Error('The AI did not return a response — try again')
 
-    const text = message.content[0].type === 'text' ? message.content[0].text.trim() : '[]'
-    const match = text.match(/\[[\s\S]*\]/)
-    const clips: SuggestedClip[] = match ? JSON.parse(match[0]) : []
+    const stripped = rawText.replace(/```(?:json)?\n?/g, '').trim()
+    const match = stripped.match(/\[[\s\S]*\]/)
+    if (!match) throw new Error('The AI response was malformed — try again')
+    const clips: SuggestedClip[] = JSON.parse(match[0])
+
+    // Safety net: drop anything that still ended up out of bounds despite instructions.
+    return duration ? clips.filter(c => tcToSecs(c.startTime) < duration && tcToSecs(c.endTime) <= duration + 1) : clips
+  } finally {
+    fs.unlink(tmpPath, () => {})
+    if (geminiFileUri) cleanupGeminiFile(geminiFileUri)
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const { title, artist, type, genre, description, videoUrl } = await req.json()
+
+  if (!videoUrl) {
+    return NextResponse.json({ clips: [], error: 'No trailer URL for this release yet' }, { status: 400 })
+  }
+
+  const label = artist ? `"${title}" by ${artist}` : `"${title}"`
+  const typeLabel = type === 'music_video' ? 'music video' : type === 'show' ? 'TV series' : 'film'
+
+  try {
+    const clips = await suggestFromVideo(videoUrl, label, typeLabel, genre, description)
     return NextResponse.json({ clips })
-  } catch {
-    return NextResponse.json({ clips: [] }, { status: 500 })
+  } catch (e) {
+    console.error('suggest-clips failed:', String(e).slice(0, 300))
+    const message = e instanceof Error ? e.message : 'Could not analyze the trailer — try again'
+    return NextResponse.json({ clips: [], error: message }, { status: 500 })
   }
 }

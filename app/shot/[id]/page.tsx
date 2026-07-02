@@ -534,7 +534,20 @@ export default function ShotPage() {
       <NavBar cta={{ href: '/submit', label: 'Analyze a Shot' }} />
 
       <div className="max-w-5xl mx-auto px-6 py-12">
-        <button onClick={() => router.back()} className="flex items-center gap-1 text-sm text-white/40 hover:text-white transition mb-8">
+        <button
+          onClick={() => {
+            // Shots opened in a new tab (e.g. from the admin Releases drawer)
+            // have no browser history to go back to — router.back() would
+            // silently no-op. Close the tab in that case instead.
+            if (window.history.length <= 1) {
+              window.close()
+              router.push('/library')
+            } else {
+              router.back()
+            }
+          }}
+          className="flex items-center gap-1 text-sm text-white/40 hover:text-white transition mb-8"
+        >
           ← Back
         </button>
 

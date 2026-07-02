@@ -379,7 +379,7 @@ export default function LibraryPage() {
                           const end = tcSecs(shot.end_time)
                           return (
                             <iframe
-                              src={`https://www.youtube-nocookie.com/embed/${ytId(shot.source_url)}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&start=${start}${end > start ? `&end=${end}` : ''}`}
+                              src={`https://www.youtube-nocookie.com/embed/${ytId(shot.source_url)}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1&start=${start}${end > start ? `&end=${end}` : ''}`}
                               className="absolute inset-0 w-full h-full pointer-events-none"
                               allow="autoplay; encrypted-media"
                             />

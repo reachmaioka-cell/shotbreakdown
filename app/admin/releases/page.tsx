@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import type { User } from '@supabase/supabase-js'
 import type { DiscoveredRelease } from '@/app/api/admin/discover-trending/route'
-import { YoutubeEmbed } from '@/app/_components/YoutubeEmbed'
 
 const ADMIN_EMAIL = 'reachmaioka@gmail.com'
 const TODAY = '2026-07-01'
@@ -717,7 +716,9 @@ function ClipDrawer({
   const [analyzingClips, setAnalyzingClips] = useState<Set<string>>(new Set())
   const [analyzeErrors, setAnalyzeErrors] = useState<Record<string, string>>({})
   const [analyzedClipTitles, setAnalyzedClipTitles] = useState<Set<string>>(new Set())
-  const [previewingClip, setPreviewingClip] = useState<string | null>(null)
+  const [hoveringClip, setHoveringClip] = useState<string | null>(null)
+  const [replayNonce, setReplayNonce] = useState<Record<string, number>>({})
+  const [trailerThumbnail, setTrailerThumbnail] = useState<string | null>(null)
   const [hoveringShotId, setHoveringShotId] = useState<string | null>(null)
   const [showImport, setShowImport] = useState(false)
 
@@ -740,6 +741,16 @@ function ClipDrawer({
         setLoading(false)
       })
   }, [sourceUrl, videoUrl])
+
+  useEffect(() => {
+    setTrailerThumbnail(null)
+    const id = videoUrl ? ytId(videoUrl) : null
+    if (!id) return
+    fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => { if (data?.thumbnail_url) setTrailerThumbnail(data.thumbnail_url) })
+      .catch(() => {})
+  }, [videoUrl])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -932,7 +943,7 @@ function ClipDrawer({
               <div className="flex items-center gap-3">
                 <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
                   className="text-xs text-white/40 hover:text-white transition underline underline-offset-2 truncate flex-1">
-                  ↗ {sourceUrl}
+                  {sourceUrl}
                 </a>
                 <button onClick={() => { setUrlDraft(sourceUrl); setEditingUrl(true) }}
                   className="text-xs text-white/20 hover:text-white/50 transition shrink-0">
@@ -1023,18 +1034,33 @@ function ClipDrawer({
                       const isAnalyzing = analyzingClips.has(clip.title)
                       const isAnalyzed = analyzedClipTitles.has(clip.title)
                       const clipError = analyzeErrors[clip.title]
-                      const isPreviewing = previewingClip === clip.title
+                      const isHovering = hoveringClip === clip.title
+                      const clipYtId = ytId(videoUrl)
+                      const nonce = replayNonce[clip.title] ?? 0
                       return (
                         <div key={clip.title} className="border border-white/8 rounded-lg p-3">
                           <div className="flex items-start justify-between gap-2">
                             <button
-                              onClick={() => setPreviewingClip(isPreviewing ? null : clip.title)}
-                              className="shrink-0 w-20 h-12 rounded-lg overflow-hidden bg-white/5 flex items-center justify-center group hover:bg-white/8 transition"
-                              title={isPreviewing ? 'Close preview' : 'Preview this clip'}
+                              onMouseEnter={() => setHoveringClip(clip.title)}
+                              onMouseLeave={() => setHoveringClip(null)}
+                              onClick={() => setReplayNonce(prev => ({ ...prev, [clip.title]: (prev[clip.title] ?? 0) + 1 }))}
+                              className="shrink-0 w-20 h-12 rounded-lg overflow-hidden relative bg-white/5 flex items-center justify-center group"
+                              title="Hover to preview — click to replay from the start"
                             >
-                              <span className={`text-lg transition ${isPreviewing ? 'text-white/70' : 'text-white/25 group-hover:text-white/50'}`}>
-                                {isPreviewing ? '✕' : '▶'}
-                              </span>
+                              {trailerThumbnail && (
+                                <img src={trailerThumbnail} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                              )}
+                              {isHovering && clipYtId && (
+                                <iframe
+                                  key={`${clip.title}-${nonce}`}
+                                  src={`https://www.youtube-nocookie.com/embed/${clipYtId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1&start=${tcSecs(clip.startTime)}&end=${tcSecs(clip.endTime)}`}
+                                  className="absolute inset-0 w-full h-full pointer-events-none"
+                                  allow="autoplay; encrypted-media"
+                                />
+                              )}
+                              {!isHovering && (
+                                <span className="relative text-white/70 text-lg drop-shadow">▶</span>
+                              )}
                             </button>
                             <div className="flex-1 min-w-0">
                               <p className="text-xs font-medium text-white/70 leading-snug">{clip.title}</p>
@@ -1060,11 +1086,6 @@ function ClipDrawer({
                               </button>
                             )}
                           </div>
-                          {isPreviewing && (
-                            <div className="mt-3 aspect-video w-full rounded-lg overflow-hidden bg-black">
-                              <YoutubeEmbed url={videoUrl} startTime={clip.startTime} endTime={clip.endTime} onReady={play => play()} />
-                            </div>
-                          )}
                         </div>
                       )
                     })}
@@ -1150,7 +1171,7 @@ function ClipDrawer({
                       const end = tcSecs(shot.end_time)
                       return (
                         <iframe
-                          src={`https://www.youtube-nocookie.com/embed/${shotYtId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&start=${start}${end > start ? `&end=${end}` : ''}`}
+                          src={`https://www.youtube-nocookie.com/embed/${shotYtId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1&start=${start}${end > start ? `&end=${end}` : ''}`}
                           className="absolute inset-0 w-full h-full pointer-events-none"
                           allow="autoplay; encrypted-media"
                         />

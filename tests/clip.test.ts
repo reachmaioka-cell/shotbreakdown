@@ -82,7 +82,7 @@ describe("YouTube clip frames vs branded posters", () => {
       enableJsApi: true,
       origin: "http://127.0.0.1:3002",
     });
-    expect(hover).toContain("youtube-nocookie.com/embed/");
+    expect(hover).toContain("youtube.com/embed/");
     expect(hover).toContain("autoplay=1");
     expect(hover).toContain("mute=1");
     expect(hover).toContain("controls=0");
@@ -98,6 +98,14 @@ describe("YouTube clip frames vs branded posters", () => {
     });
     expect(page).toContain("controls=1");
     expect(page).not.toContain("loop=1");
+
+    const unmuted = clipEmbedUrl({
+      sourceUrl: `https://www.youtube.com/watch?v=${ID}`,
+      mute: false,
+      controls: true,
+      loop: false,
+    });
+    expect(unmuted).toContain("mute=0");
   });
 
   it("reconstructs a watch URL from a thumbnail", () => {

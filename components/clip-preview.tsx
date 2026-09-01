@@ -1,14 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
-  clipEmbedUrl,
   clipPosterCandidates,
   extractYoutubeId,
   isYoutubeThumbUrl,
   youtubeScrubFrameUrls,
-  youtubeSeekCommand,
 } from "@/lib/clip";
 
 function subscribeMedia(query: string) {
@@ -23,24 +21,16 @@ function mediaSnapshot(query: string, fallback = false) {
   return () => (typeof window === "undefined" ? fallback : window.matchMedia(query).matches);
 }
 
-function originSnapshot() {
-  return window.location.origin;
-}
-
-function subscribeOrigin() {
-  return () => {};
-}
-
 /**
- * Thumbnail that becomes the clip on hover: muted autoplay plus horizontal
- * scrub (YouTube numbered stills and iframe seek). Touch devices skip hover
- * and just see the still — tap is handled by the parent link.
+ * Grid thumbnail. On a mouse, moving across the still scrubs numbered frames
+ * from the clip so you can tell whether it is worth opening. Touch skips hover
+ * and just shows the still — tap is handled by the parent link. The shot page
+ * is where the real video plays; embedding YouTube on every tile hid the scrub
+ * and often failed to play.
  */
 export function ClipPreview({
   sourceUrl,
   thumbnailUrl,
-  startSeconds = 0,
-  endSeconds = 0,
   alt = "",
   sizes,
   className = "",
@@ -63,7 +53,6 @@ export function ClipPreview({
   );
   const ytId = extractYoutubeId(sourceUrl ?? "") ?? extractYoutubeId(thumbnailUrl ?? "");
   const scrubFrames = useMemo(() => (ytId ? youtubeScrubFrameUrls(ytId) : []), [ytId]);
-  const origin = useSyncExternalStore(subscribeOrigin, originSnapshot, () => "");
   const reducedMotion = useSyncExternalStore(
     subscribeMedia("(prefers-reduced-motion: reduce)"),
     mediaSnapshot("(prefers-reduced-motion: reduce)"),
@@ -74,28 +63,28 @@ export function ClipPreview({
     mediaSnapshot("(hover: hover) and (pointer: fine)"),
     () => false
   );
-  const embedUrl = clipEmbedUrl({
-    sourceUrl,
-    thumbnailUrl,
-    startSeconds,
-    endSeconds: endSeconds > startSeconds ? endSeconds : undefined,
-    autoplay: true,
-    mute: true,
-    controls: false,
-    enableJsApi: true,
-    origin: origin || undefined,
-    loop: true,
-  });
 
   const [posterIndex, setPosterIndex] = useState(0);
   const [hovering, setHovering] = useState(false);
-  const [scrubUrl, setScrubUrl] = useState<string | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const lastSeek = useRef(0);
+  const [scrubIndex, setScrubIndex] = useState(0);
+  const [deadScrub, setDeadScrub] = useState<Set<number>>(() => new Set());
 
   const poster = posters[posterIndex] ?? null;
-  const canHover = enableHover && finePointer && !reducedMotion;
-  const play = canHover && hovering && !!embedUrl;
+  const canHover = enableHover && finePointer && !reducedMotion && scrubFrames.length > 1;
+
+  useEffect(() => {
+    if (!canHover) return;
+    const frames = scrubFrames.map((src) => {
+      const img = new window.Image();
+      img.src = src;
+      return img;
+    });
+    return () => {
+      frames.forEach((img) => {
+        img.src = "";
+      });
+    };
+  }, [canHover, scrubFrames]);
 
   function beginHover() {
     if (!canHover) return;
@@ -104,27 +93,23 @@ export function ClipPreview({
 
   function endHover() {
     setHovering(false);
-    setScrubUrl(null);
+    setScrubIndex(0);
   }
 
   function scrubAt(clientX: number, currentTarget: HTMLDivElement) {
+    if (!canHover) return;
     const rect = currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
     const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-
-    if (scrubFrames.length > 0) {
-      const index = Math.min(scrubFrames.length - 1, Math.floor(t * scrubFrames.length));
-      setScrubUrl(scrubFrames[index] ?? null);
-    }
-
-    const start = Math.max(0, startSeconds);
-    const span = endSeconds > start ? endSeconds - start : 90;
-    const seconds = start + t * span;
-    const now = performance.now();
-    if (now - lastSeek.current < 80) return;
-    lastSeek.current = now;
-    iframeRef.current?.contentWindow?.postMessage(youtubeSeekCommand(seconds), "*");
+    const live = scrubFrames
+      .map((url, i) => ({ url, i }))
+      .filter((frame) => !deadScrub.has(frame.i));
+    if (live.length === 0) return;
+    const pick = live[Math.min(live.length - 1, Math.floor(t * live.length))];
+    if (pick) setScrubIndex(pick.i);
   }
+
+  const liveScrub = hovering && canHover && !deadScrub.has(scrubIndex) ? scrubFrames[scrubIndex] : null;
 
   return (
     <div
@@ -169,23 +154,19 @@ export function ClipPreview({
         <div className="absolute inset-0 bg-ink-2" />
       )}
 
-      {play ? (
-        <iframe
-          ref={iframeRef}
-          src={embedUrl}
-          title={alt || "Clip preview"}
-          className="absolute inset-0 h-full w-full pointer-events-none"
-          allow="autoplay; encrypted-media"
-          tabIndex={-1}
-        />
-      ) : null}
-
-      {canHover && hovering && scrubUrl && !play ? (
+      {liveScrub ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={scrubUrl}
+          src={liveScrub}
           alt=""
           className="absolute inset-0 h-full w-full object-cover pointer-events-none"
+          onError={() =>
+            setDeadScrub((current) => {
+              const next = new Set(current);
+              next.add(scrubIndex);
+              return next;
+            })
+          }
         />
       ) : null}
     </div>

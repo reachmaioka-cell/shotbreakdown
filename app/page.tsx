@@ -17,7 +17,7 @@ const TAGLINE = "Turn any video into a searchable cinematography reference libra
 export const metadata: Metadata = {
   title: "ShotBreakdown — searchable cinematography references from your own footage",
   description:
-    "Upload a video. ShotBreakdown detects every shot, picks the strongest frame, analyzes the camera, lens, lighting, colour and mood, and turns it into a searchable visual reference library.",
+    "Upload a video. ShotBreakdown detects every shot, picks the strongest frame, analyzes the camera, lens, lighting, color and mood, and turns it into a searchable visual reference library.",
   alternates: { canonical: getAppUrl() },
   openGraph: {
     type: "website",
@@ -138,7 +138,7 @@ export default async function Home() {
               </h1>
               <p className="mt-5 max-w-2xl text-[15px] sm:text-[16px] leading-relaxed text-text-1">
                 ShotBreakdown detects every shot in your footage, picks the strongest frame from
-                each, and reads the camera, lens, lighting, colour and mood — so a whole edit
+                each, and reads the camera, lens, lighting, color and mood — so a whole edit
                 becomes a library you can search by how it looks.
               </p>
               <div className="mt-7 flex flex-wrap items-center gap-3">
@@ -208,28 +208,15 @@ export default async function Home() {
               <h2 className="text-[20px] font-medium text-text-0">Search by how it looks</h2>
               <p className="mt-3 max-w-lg text-[14px] leading-relaxed text-text-1">
                 Every shot is indexed on what is actually in the frame — composition, subject,
-                light, colour, camera. A search for something you can picture but cannot name still
-                finds it.
+                light, color, camera. Open the library and pick the filters yourself: shot size,
+                movement, lens, lighting, color, mood.
               </p>
-              <ul className="mt-5 flex flex-wrap gap-2">
-                {[
-                  "girl walking through Tokyo at night",
-                  "wide shots with blue lighting",
-                  "slow dolly in",
-                  "close ups with shallow depth of field",
-                  "symmetrical compositions",
-                  "handheld, documentary",
-                ].map((example) => (
-                  <li key={example}>
-                    <Link
-                      href={`/library?q=${encodeURIComponent(example)}`}
-                      className="inline-flex rounded-[3px] border border-line bg-ink-1 px-2.5 py-1.5 text-[12px] text-text-1 hover:border-accent/50 hover:text-accent"
-                    >
-                      {example}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+              <Link
+                href="/library"
+                className="mt-5 inline-flex h-9 items-center rounded-[3px] border border-line px-3 text-[13px] text-text-0 hover:border-line-strong hover:bg-ink-2"
+              >
+                Open the library
+              </Link>
             </div>
 
             <div>

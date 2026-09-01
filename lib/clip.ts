@@ -199,7 +199,7 @@ export function clipEmbedUrl(input: ClipEmbedOptions): string | null {
       params.set("enablejsapi", "1");
       if (input.origin) params.set("origin", input.origin);
     }
-    return `https://www.youtube-nocookie.com/embed/${ytId}?${params.toString()}`;
+    return `https://www.youtube.com/embed/${ytId}?${params.toString()}`;
   }
 
   const tiktokId = extractTiktokVideoId(source);

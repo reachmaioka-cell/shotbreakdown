@@ -1,0 +1,26 @@
+---
+description: ShotBreakdown product context, stack, and conventions
+alwaysApply: true
+---
+
+# ShotBreakdown
+
+Next.js 16 (App Router, React 19, Tailwind v4) + Supabase (auth, Postgres, storage) + Anthropic. Filmmakers paste a YouTube/TikTok link or upload a frame/clip and get a cinematography breakdown.
+
+## Priority
+
+1. Accurate, specific, actionable breakdowns for recreating a shot
+2. Public SEO-indexable library of verified breakdowns
+3. Calm UI — one clear action per screen
+4. Async, safe, cheap backend
+5. Flywheel: ratings, edits, saves, follow-ups improve prompts/retrieval and personalize
+
+## Conventions
+
+- TypeScript strict. Server Components by default; `"use client"` only where needed
+- Zod for all API input/output validation
+- Never trust client-supplied `user_id`; always `supabase.auth.getUser()`
+- Keep black/zinc visual style. No new UI libraries
+- Schema changes go in numbered files under `supabase/migrations/`
+- Do not log secrets. Do not commit `.env.local`
+- After each phase: `npm run lint && npx tsc --noEmit && npm run build` must pass

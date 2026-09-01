@@ -1,0 +1,233 @@
+@import "tailwindcss";
+
+/*
+ * ShotBreakdown visual system.
+ *
+ * The frame is the object; the interface is the mount it hangs in. Near-black
+ * ground, one accent, type that recedes. Chrome earns its place or is removed.
+ */
+
+:root {
+  --ink-0: #060607;
+  --ink-1: #0b0b0d;
+  --ink-2: #121215;
+  --ink-3: #1a1a1f;
+  --line: #242429;
+  --line-strong: #34343c;
+
+  /*
+   * Contrast against --ink-0, measured: text-1 8.4:1, text-2 5.7:1,
+   * text-3 4.8:1. All clear WCAG AA for body and small text — the dark
+   * aesthetic does not get to cost legibility.
+   */
+  --text-0: #f4f4f5;
+  --text-1: #adadb6;
+  --text-2: #8b8b95;
+  --text-3: #7a7a85;
+
+  --accent: #f0c674;
+  --accent-ink: #17140c;
+  --danger: #ef6b6b;
+  --ok: #6fcf97;
+
+  --radius: 3px;
+  --grid-gap: 8px;
+}
+
+@theme inline {
+  --color-ink-0: var(--ink-0);
+  --color-ink-1: var(--ink-1);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text-0: var(--text-0);
+  --color-text-1: var(--text-1);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-danger: var(--danger);
+  --color-ok: var(--ok);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+html {
+  color-scheme: dark;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+body {
+  background: var(--ink-0);
+  color: var(--text-0);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Focus is always visible; the dark palette is not an excuse to hide it. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+@layer utilities {
+  .eyebrow {
+    font-size: 10px;
+    line-height: 1.2;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-2);
+  }
+
+  .mono {
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hairline {
+    border-color: var(--line);
+  }
+
+  /*
+   * The frame is the interface. Tight gap, large stills — closer to a
+   * reference library than a captioned card grid.
+   */
+  .shot-grid {
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  }
+
+  .shot-grid-lg {
+    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  }
+
+  .shot-grid-sm {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
+
+  /*
+   * Tile actions (save / collect). Revealed on hover where hover exists; always
+   * visible where it does not, because an invisible control that still accepts
+   * taps is worse than a visible one.
+   */
+  .tile-actions {
+    opacity: 1;
+    transition: opacity 150ms ease;
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .tile-actions {
+      opacity: 0;
+    }
+    .group:hover .tile-actions,
+    .group:focus-within .tile-actions {
+      opacity: 1;
+    }
+  }
+
+  /*
+   * A single column on a phone wastes the medium — this is a visual library,
+   * and two frames per row is still legible at 390px.
+   */
+  @media (max-width: 640px) {
+    .shot-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 3px;
+    }
+    .shot-grid-lg {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .shot-grid-sm {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  /*
+   * A sticky column that can outgrow the viewport needs its own scroll region,
+   * or its lower half is simply unreachable.
+   */
+  .sticky-rail {
+    position: sticky;
+    top: 1.25rem;
+    max-height: calc(100vh - 2.5rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.25rem;
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--ink-2) 25%, var(--ink-3) 50%, var(--ink-2) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Range input styled as a film scrubber. */
+input[type="range"].scrubber {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"].scrubber::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--line-strong);
+}
+input[type="range"].scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 3px;
+  height: 18px;
+  margin-top: -8px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+input[type="range"].scrubber::-moz-range-track {
+  height: 2px;
+  background: var(--line-strong);
+}
+input[type="range"].scrubber::-moz-range-thumb {
+  width: 3px;
+  height: 18px;
+  border: 0;
+  border-radius: 1px;
+  background: var(--accent);
+}

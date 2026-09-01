@@ -1,0 +1,7 @@
+{
+  "crons": [
+    { "path": "/api/worker", "schedule": "*/2 * * * *" },
+    { "path": "/api/cron/daily", "schedule": "0 8 * * *" },
+    { "path": "/api/cron/learning?batch=8", "schedule": "0 9 * * *" }
+  ]
+}

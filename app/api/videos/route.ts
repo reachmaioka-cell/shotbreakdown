@@ -4,7 +4,11 @@ import { trackAsync } from "@/lib/analytics";
 import { FEATURES } from "@/lib/features";
 import { jsonError } from "@/lib/http";
 import { enqueueJob } from "@/lib/pipeline/queue";
-import { planLimits } from "@/lib/plans";
+import {
+  SEGMENT_LENGTH_TOLERANCE_SECONDS,
+  formatDurationLimit,
+  planLimits,
+} from "@/lib/plans";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { detectLinkSource } from "@/lib/source";
 import { createClient } from "@/lib/supabase/server";
@@ -23,6 +27,11 @@ const UploadBody = z.object({
   sourceType: z.enum(["video_upload", "frame_upload"]),
   title: z.string().max(200).optional(),
   sizeBytes: z.number().int().positive().optional(),
+  /** In and out points inside the uploaded file, in seconds. */
+  segmentStart: z.number().min(0).optional(),
+  segmentEnd: z.number().positive().optional(),
+  /** What the uploader wants to know about the segment. */
+  focus: z.string().max(500).optional(),
 });
 
 const Body = z.union([LinkBody, UploadBody]);
@@ -104,14 +113,53 @@ export async function POST(request: Request) {
     if (parsed.data.sizeBytes && parsed.data.sizeBytes > limits.maxUploadBytes) {
       return jsonError("This file is larger than your plan allows", 413);
     }
+
+    // A still has no range to take, and half a range is not a range: an in
+    // point with no out point reads as "the whole file", the same as neither.
+    const bothGiven =
+      parsed.data.sourceType === "video_upload" &&
+      typeof parsed.data.segmentStart === "number" &&
+      typeof parsed.data.segmentEnd === "number" &&
+      Number.isFinite(parsed.data.segmentStart) &&
+      Number.isFinite(parsed.data.segmentEnd);
+
+    let segmentStart: number | null = null;
+    let segmentEnd: number | null = null;
+
+    if (bothGiven) {
+      const start = parsed.data.segmentStart as number;
+      const end = parsed.data.segmentEnd as number;
+      if (end <= start) {
+        return jsonError("The out point has to come after the in point", 400);
+      }
+      // The cap is a product boundary, so it is checked here rather than being
+      // left to the browser that proposed the range. The tolerance absorbs the
+      // disagreement between a container's timestamps and a browser's estimate.
+      if (end - start > limits.maxVideoSeconds + SEGMENT_LENGTH_TOLERANCE_SECONDS) {
+        return jsonError(
+          `That segment is ${Math.round(end - start)} seconds. Segments are limited to ${formatDurationLimit(limits.maxVideoSeconds)} on your plan.`,
+          400
+        );
+      }
+      segmentStart = start;
+      segmentEnd = end;
+    }
+
+    const focus = parsed.data.focus?.trim();
+
     insert = {
       user_id: user.id,
       source_type: parsed.data.sourceType,
       file_path: parsed.data.filePath,
       title: parsed.data.title ?? null,
       size_bytes: parsed.data.sizeBytes ?? null,
+      segment_start: segmentStart,
+      segment_end: segmentEnd,
+      focus: focus ? focus : null,
       status: "queued",
-      content_hash: `file:${parsed.data.filePath}`,
+      // The range is part of the identity: the same file trimmed to a different
+      // stretch is a different segment, not a duplicate submit of the last one.
+      content_hash: `file:${parsed.data.filePath}:${segmentStart ?? 0}-${segmentEnd ?? "end"}`,
     };
   }
 

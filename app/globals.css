@@ -30,8 +30,20 @@
   --danger: #ef6b6b;
   --ok: #6fcf97;
 
-  --radius: 3px;
-  --grid-gap: 8px;
+  /*
+   * 2px, not 3: at this scale the corner reads as a cut edge rather than a
+   * rounded box, which is what a contact sheet wants.
+   */
+  --radius: 2px;
+  /* The gap between frames in a grid. Tight — the images do the talking. */
+  --grid-gap: 4px;
+
+  /*
+   * Shell geometry. The sidebar and top bar are the whole of the chrome; every
+   * other region is measured off them, so both numbers live in one place.
+   */
+  --sidebar-w: 240px;
+  --topbar-h: 48px;
 }
 
 @theme inline {
@@ -51,6 +63,9 @@
   --color-ok: var(--ok);
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
+  /* Sizing namespace, so the shell can say w-sidebar / h-topbar / pl-sidebar. */
+  --spacing-sidebar: var(--sidebar-w);
+  --spacing-topbar: var(--topbar-h);
 }
 
 html {
@@ -102,7 +117,7 @@ body {
    */
   .shot-grid {
     display: grid;
-    gap: 4px;
+    gap: var(--grid-gap);
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   }
 

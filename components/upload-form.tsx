@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { FocusField } from "@/components/focus-field";
+import { SegmentTrimmer, type SegmentRange } from "@/components/segment-trimmer";
 import {
   ACCEPT_ATTRIBUTE,
   ACCEPT_VIDEO_ATTRIBUTE,
@@ -11,9 +13,25 @@ import {
   UPLOAD_BUCKET,
 } from "@/lib/constants";
 import { createClient } from "@/lib/supabase/client";
-import { formatBytes, formatDurationLimit, type PlanLimits } from "@/lib/plans";
+import {
+  SEGMENT_TRIM_EPSILON_SECONDS,
+  formatBytes,
+  formatDurationLimit,
+  type PlanLimits,
+} from "@/lib/plans";
 
 type Phase = "idle" | "uploading" | "creating" | "queued" | "error";
+
+/**
+ * The floor bitrate we assume when the browser cannot read a duration.
+ *
+ * A file that will not decode here is a camera or mezzanine format — ProRes,
+ * DNx, a high-bitrate MKV — and those run far above 2 Mbit/s. So a file smaller
+ * than the cap times this rate cannot be longer than the cap, and asking its
+ * owner for in and out points would be a toll for nothing. Anything larger has
+ * to be trimmed by hand. The server still enforces the real cap either way.
+ */
+const ASSUMED_MIN_BYTES_PER_SECOND = 250_000;
 
 function extension(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase();
@@ -34,6 +52,9 @@ function isSupported(file: File, allowStills: boolean): boolean {
  *
  * The browser only uploads; processing is a durable server job, so closing the
  * tab after the upload completes does not lose the analysis.
+ *
+ * The unit is a segment, so the file is trimmed here — before a byte is sent —
+ * and the range travels with it as provenance.
  *
  * The two flags arrive as props because feature flags are server-only — a
  * client component reading them would see every one of them as false.
@@ -58,10 +79,25 @@ export function UploadForm({
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [range, setRange] = useState<SegmentRange>({ start: 0, end: 0 });
+  const [duration, setDuration] = useState<number | null>(null);
+  const [decodeFailed, setDecodeFailed] = useState(false);
+  const [trimOpen, setTrimOpen] = useState(false);
+  const [focus, setFocus] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const trimmerId = useId();
 
   useEffect(() => () => xhrRef.current?.abort(), []);
+
+  const maxSeconds = limits.maxVideoSeconds;
+
+  function resetSegment() {
+    setRange({ start: 0, end: 0 });
+    setDuration(null);
+    setDecodeFailed(false);
+    setTrimOpen(false);
+  }
 
   function chooseFile(next: File) {
     if (!isSupported(next, stillUploadsEnabled)) {
@@ -77,15 +113,64 @@ export function UploadForm({
       return;
     }
     setError(null);
+    resetSegment();
     setFile(next);
     setUrl("");
   }
+
+  /**
+   * The trimmer reports what the browser could read. A null duration means the
+   * file did not decode, so the typed in and out points are the only way in.
+   */
+  const handleDurationKnown = useCallback(
+    (found: number | null) => {
+      if (found === null) {
+        setDuration(null);
+        setDecodeFailed(true);
+        setRange({ start: 0, end: 0 });
+        setTrimOpen(true);
+        return;
+      }
+      setDecodeFailed(false);
+      setDuration(found);
+      if (found > maxSeconds) {
+        // Over the cap there is no such thing as an untrimmed submit, so the
+        // selection starts at the largest legal one rather than at nothing.
+        setRange({ start: 0, end: Math.min(maxSeconds, found) });
+        setTrimOpen(true);
+      } else {
+        setRange({ start: 0, end: found });
+      }
+    },
+    [maxSeconds]
+  );
 
   function cancel() {
     xhrRef.current?.abort();
     xhrRef.current = null;
     setPhase("idle");
     setProgress(0);
+  }
+
+  const isVideoFile = !!file && !file.type.startsWith("image/");
+  const durationKnown = duration !== null && duration > 0;
+  const awaitingMetadata = isVideoFile && !durationKnown && !decodeFailed;
+  const plausiblyOverCap = !!file && file.size > maxSeconds * ASSUMED_MIN_BYTES_PER_SECOND;
+  const mustTrim =
+    isVideoFile &&
+    (durationKnown ? duration > maxSeconds : decodeFailed && plausiblyOverCap);
+
+  const selectionLength = range.end - range.start;
+  const hasSelection = selectionLength > 0;
+  const selectionOverCap = hasSelection && selectionLength > maxSeconds;
+  const segmentBlocked =
+    isVideoFile && (selectionOverCap || (mustTrim && !hasSelection) || awaitingMetadata);
+
+  function toggleTrim() {
+    const next = !trimOpen;
+    // A selection the user can no longer see must never be the one submitted.
+    if (!next) setRange(durationKnown ? { start: 0, end: duration } : { start: 0, end: 0 });
+    setTrimOpen(next);
   }
 
   async function submit(event: React.FormEvent) {
@@ -103,6 +188,16 @@ export function UploadForm({
 
     try {
       if (file) {
+        // With an unreadable duration any typed range is a deliberate trim;
+        // with a readable one, a range that covers the file is not a trim at all.
+        const trimmed =
+          isVideoFile &&
+          hasSelection &&
+          (durationKnown
+            ? range.start > SEGMENT_TRIM_EPSILON_SECONDS ||
+              range.end < duration - SEGMENT_TRIM_EPSILON_SECONDS
+            : true);
+
         setPhase("uploading");
         setProgress(0);
         const supabase = createClient();
@@ -124,6 +219,8 @@ export function UploadForm({
             sourceType: file.type.startsWith("image/") ? "frame_upload" : "video_upload",
             title: file.name.replace(/\.[^.]+$/, ""),
             sizeBytes: file.size,
+            ...(trimmed ? { segmentStart: range.start, segmentEnd: range.end } : {}),
+            ...(focus.trim() ? { focus: focus.trim() } : {}),
           }),
         });
         await handleResponse(res);
@@ -192,7 +289,10 @@ export function UploadForm({
             {!busy ? (
               <button
                 type="button"
-                onClick={() => setFile(null)}
+                onClick={() => {
+                  setFile(null);
+                  resetSegment();
+                }}
                 className="text-[12px] text-text-2 hover:text-text-0"
               >
                 Choose a different file
@@ -205,7 +305,7 @@ export function UploadForm({
             <p className="mt-1 text-[12px] text-text-2">
               MP4, MOV, M4V, WebM, MKV{stillUploadsEnabled ? " or a still" : ""} · up to{" "}
               {formatBytes(limits.maxUploadBytes)} ·{" "}
-              {formatDurationLimit(limits.maxVideoSeconds)} max
+              {formatDurationLimit(maxSeconds)} max
             </p>
             <button
               type="button"
@@ -227,6 +327,51 @@ export function UploadForm({
           }}
         />
       </div>
+
+      {file && isVideoFile ? (
+        <div className="flex flex-col gap-3">
+          {mustTrim ? (
+            <p className="text-[13px] leading-relaxed text-text-1">
+              Segments are limited to {formatDurationLimit(maxSeconds)} on your plan. Pick the
+              part you want broken down.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={toggleTrim}
+              aria-expanded={trimOpen}
+              aria-controls={trimmerId}
+              className="self-start text-[13px] text-text-1 hover:text-text-0"
+            >
+              {trimOpen ? "Use the whole file" : "Trim to a segment"}
+            </button>
+          )}
+
+          {/*
+            Mounted even while collapsed: the duration is read from the file
+            here, and it is what decides whether trimming is optional at all.
+          */}
+          <div id={trimmerId} hidden={!mustTrim && !trimOpen}>
+            <SegmentTrimmer
+              key={`${file.name}-${file.size}-${file.lastModified}`}
+              file={file}
+              maxSeconds={maxSeconds}
+              value={range}
+              onChange={setRange}
+              onDurationKnown={handleDurationKnown}
+            />
+          </div>
+
+          {/* Said out here as well, because the trimmer saying it may be hidden. */}
+          {awaitingMetadata ? (
+            <p aria-live="polite" className="text-[12px] text-text-3">
+              Reading the file…
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {file ? <FocusField value={focus} onChange={setFocus} disabled={busy} /> : null}
 
       {linkSourcesEnabled && !file ? (
         <div className="flex items-center gap-3">
@@ -295,7 +440,7 @@ export function UploadForm({
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="submit"
-          disabled={busy || (!file && !(linkSourcesEnabled && url.trim()))}
+          disabled={busy || (!file && !(linkSourcesEnabled && url.trim())) || segmentBlocked}
           className="inline-flex h-10 items-center rounded-[3px] bg-text-0 px-5 text-[13px] font-medium text-ink-0 hover:bg-white disabled:opacity-40"
         >
           {busy ? "Working…" : "Break it down"}
@@ -325,7 +470,7 @@ function uploadWithProgress(
   path: string,
   token: string,
   onProgress: (n: number) => void,
-  xhrRef: React.MutableRefObject<XMLHttpRequest | null>
+  xhrRef: React.RefObject<XMLHttpRequest | null>
 ): Promise<void> {
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

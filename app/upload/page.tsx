@@ -4,7 +4,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { UploadForm } from "@/components/upload-form";
 import { FEATURES } from "@/lib/features";
-import { planLimits } from "@/lib/plans";
+import { formatDurationLimit, planLimits } from "@/lib/plans";
 import { createClient } from "@/lib/supabase/server";
 import { monthlyVideoUsage } from "@/lib/videos";
 
@@ -45,10 +45,11 @@ export default async function UploadPage() {
       <main id="main" className="flex-1 w-full mx-auto max-w-2xl px-4 sm:px-6 py-12">
         <h1 className="text-[19px] font-medium text-text-0">Break down a segment</h1>
         <p className="mt-2 mb-8 text-[14px] leading-relaxed text-text-1">
-          Upload a segment — a scene, a take, one commercial — rather than a whole film.
-          ShotBreakdown finds the shots inside it and breaks each one down: camera, lens,
-          lighting, colour, environment and mood. You can close this tab; processing continues on
-          the server.
+          Upload a segment — a scene, a take, one commercial — rather than a whole film. Trim it
+          to the part you care about, up to {formatDurationLimit(limits.maxVideoSeconds)}, and say
+          what you want to know about it. You get one breakdown of that segment: what happens, how
+          it was shot and cut, and what each department has to do to make it. You can close this
+          tab; processing continues on the server.
         </p>
 
         <UploadForm
@@ -64,7 +65,7 @@ export default async function UploadPage() {
           <ol className="flex flex-col gap-2.5 text-[13px] text-text-1">
             <li className="flex gap-3">
               <span className="mono text-text-3">01</span>
-              Shot boundaries are detected from the segment itself.
+              The segment you chose is cut from your file and its shot boundaries are detected.
             </li>
             <li className="flex gap-3">
               <span className="mono text-text-3">02</span>
@@ -76,6 +77,11 @@ export default async function UploadPage() {
             </li>
             <li className="flex gap-3">
               <span className="mono text-text-3">04</span>
+              The breakdown is written for the segment as a whole, department by department, and
+              it answers what you asked.
+            </li>
+            <li className="flex gap-3">
+              <span className="mono text-text-3">05</span>
               Your shots appear in{" "}
               <Link href="/library?scope=mine" className="text-accent hover:underline">
                 My shots

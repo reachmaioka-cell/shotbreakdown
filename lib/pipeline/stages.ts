@@ -1288,6 +1288,42 @@ export async function runGenerateSegmentBreakdown(
     throw new PipelineError(`Could not save the breakdown: ${error.message}`, "db_write_failed");
   }
 
+  /*
+   * The question can change while the answer is being written.
+   *
+   * The refocus route cannot start a second job — the dedupe index blocks one
+   * while this run is active — so a question asked mid-run would otherwise be
+   * stored, charged, and silently never answered. Compare what we actually
+   * answered against what the row says now, and if they differ, queue the
+   * answer to the newer question. Dedupe no longer blocks it: this job is
+   * finished by the time the insert lands.
+   */
+  const { data: latest } = await admin
+    .from("videos")
+    .select("focus")
+    .eq("id", videoId)
+    .maybeSingle();
+  const currentFocus = ((latest?.focus as string | null) ?? "").trim() || null;
+  if (currentFocus !== focus) {
+    await setVideoStatus(admin, videoId, { breakdown_status: "pending", breakdown_error: null });
+    await enqueueJob(
+      "generate_segment_breakdown",
+      { videoId },
+      {
+        videoId,
+        userId: (video.user_id as string | null) ?? null,
+        dedupeKey: `segment-breakdown:${videoId}`,
+        priority: 4,
+      }
+    ).catch((e) => {
+      // Losing the follow-up leaves the earlier answer in place rather than
+      // nothing, so it is not worth failing a completed generation over.
+      console.error("requeue segment breakdown", videoId, e instanceof Error ? e.message : e);
+      return null;
+    });
+    return { videoId, shots: inputs.length, requeuedForNewFocus: true };
+  }
+
   return { videoId, shots: inputs.length, framed: inputs.filter((s) => s.image).length };
 }
 

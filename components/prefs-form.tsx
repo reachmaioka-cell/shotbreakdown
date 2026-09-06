@@ -1,11 +1,19 @@
 "use client";
 
+
 import { useState } from "react";
 import type { UserPreferences } from "@/lib/preferences";
+import { DEPARTMENTS, DEPARTMENT_LABELS } from "@/lib/validation";
 
 const WORK = ["branded", "music-video", "doc", "narrative", "social"] as const;
 
 type ProfileBits = { display_name: string; credit_me: boolean };
+
+/** Derived from the shared vocabulary, plus an opt-out, so it cannot drift. */
+const DEPARTMENT_CHOICES: [string, string][] = [
+  ...DEPARTMENTS.map((d) => [d, DEPARTMENT_LABELS[d]] as [string, string]),
+  ["other", "Something else"],
+];
 
 export function PrefsForm({
   initial,
@@ -22,6 +30,7 @@ export function PrefsForm({
   const [camera, setCamera] = useState(initial?.primary_camera ?? "");
   const [work, setWork] = useState<string[]>(initial?.typical_work ?? []);
   const [budget, setBudget] = useState(initial?.budget_band ?? "under_5000");
+  const [role, setRole] = useState<string>(initial?.role ?? "");
   const [tone, setTone] = useState(initial?.tone ?? "concise");
   const [lenses, setLenses] = useState((initial?.lenses ?? []).join(", "));
   const [displayName, setDisplayName] = useState(profile?.display_name ?? "");
@@ -45,6 +54,7 @@ export function PrefsForm({
         primary_camera: camera || null,
         typical_work: work,
         budget_band: budget,
+        role: role || null,
         tone,
         lenses: lenses
           .split(",")
@@ -111,6 +121,27 @@ export function PrefsForm({
               className={`text-sm rounded-lg px-3 py-2 border ${work.includes(v) ? "border-white text-white" : "border-zinc-800 text-zinc-500"}`}
             >
               {v}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend className="text-sm text-zinc-400 mb-2">Your department</legend>
+        <p className="text-xs text-zinc-500 mb-2">
+          Every breakdown covers all nine departments. This decides which one leads and which
+          one opens first.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {DEPARTMENT_CHOICES.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={role === value}
+              onClick={() => setRole(role === value ? "" : value)}
+              className={`text-sm rounded-lg px-3 py-2 border ${role === value ? "border-white text-white" : "border-zinc-800 text-zinc-500"}`}
+            >
+              {label}
             </button>
           ))}
         </div>

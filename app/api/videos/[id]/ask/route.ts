@@ -94,6 +94,31 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to ask about a segment", 401);
 
+  // A public segment is readable by anyone, so ownership is checked here rather
+  // than inferred from the read succeeding. The conversation is the owner's.
+  //
+  // Resolved before the rate limit, the way the sibling segment route does it
+  // (app/api/videos/[id]/breakdown/route.ts): a request that was never going
+  // to be answered must not cost the caller a slot in the daily ask budget.
+  // That covers a stranger probing an id, and an owner polling a segment
+  // whose shots have not finished analysing.
+  const { data: video } = await supabase
+    .from("videos")
+    .select("id, user_id, title, focus, breakdown")
+    .eq("id", id)
+    .maybeSingle();
+  if (!video || video.user_id !== user.id) return jsonError("Not found", 404);
+
+  const { data: shotRows } = await supabase
+    .from("shots")
+    .select("shot_index, start_seconds, end_seconds, metadata")
+    .eq("video_id", id)
+    .eq("status", "complete")
+    .order("shot_index");
+
+  const shots = (shotRows ?? []) as ShotRow[];
+  if (shots.length === 0) return jsonError("Not found", 404);
+
   const { data: profile } = await supabase
     .from("profiles")
     .select("plan")
@@ -112,25 +137,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
   const parsed = AskSchema.safeParse(raw);
   if (!parsed.success) return jsonError("Invalid input", 400);
-
-  // A public segment is readable by anyone, so ownership is checked here rather
-  // than inferred from the read succeeding. The conversation is the owner's.
-  const { data: video } = await supabase
-    .from("videos")
-    .select("id, user_id, title, focus, breakdown")
-    .eq("id", id)
-    .maybeSingle();
-  if (!video || video.user_id !== user.id) return jsonError("Not found", 404);
-
-  const { data: shotRows } = await supabase
-    .from("shots")
-    .select("shot_index, start_seconds, end_seconds, metadata")
-    .eq("video_id", id)
-    .eq("status", "complete")
-    .order("shot_index");
-
-  const shots = (shotRows ?? []) as ShotRow[];
-  if (shots.length === 0) return jsonError("Not found", 404);
 
   const admin = createAdminClient();
   const [{ data: existing }, { data: prefs }, { data: insight }] = await Promise.all([

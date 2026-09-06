@@ -41,7 +41,7 @@ export async function POST(request: Request) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return jsonError("Sign in to analyze a video", 401);
+  if (!user) return jsonError("Sign in to break down a segment", 401);
 
   const limited = await enforceRateLimit("video_submit", request, user.id);
   if (limited) return limited;

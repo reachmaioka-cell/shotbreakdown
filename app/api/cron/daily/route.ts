@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { isInternalRequest, jsonError } from "@/lib/http";
-import { sweepStuckVideos, writePromptInsights, runLearningTick } from "@/lib/cron-jobs";
+import {
+  sweepStuckVideos,
+  sweepStuckBreakdowns,
+  writePromptInsights,
+  runLearningTick,
+} from "@/lib/cron-jobs";
 import { drainQueue } from "@/lib/pipeline/worker";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -17,6 +22,7 @@ export async function GET(request: Request) {
   // The processing queue comes first: a user waiting on an analysis matters more
   // than the nightly learning work.
   const requeued = await sweepStuckVideos();
+  const breakdowns = await sweepStuckBreakdowns();
   const processed = await drainQueue({ maxMs: 180_000, batchSize: 2 });
   await createAdminClient().rpc("prune_rate_limits").then(
     () => {},
@@ -30,5 +36,5 @@ export async function GET(request: Request) {
   } catch (e) {
     console.error("learning tick failed", e instanceof Error ? e.message : e);
   }
-  return NextResponse.json({ ok: true, requeued, processed, insights, learning });
+  return NextResponse.json({ ok: true, requeued, breakdowns, processed, insights, learning });
 }

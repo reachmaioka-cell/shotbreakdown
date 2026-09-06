@@ -724,11 +724,36 @@ Each of these was found by running the thing, not by reading it.
 - **The landing page shows the shape of a breakdown, not a sample of one.** Writing a
   convincing fake would have been the single dishonest thing on the page. Supplying one short
   clip you own turns that section into a real worked example.
-- **A stranded breakdown has no automatic retry.** If `breakdown_status` sticks at `pending`,
-  the owner can regenerate from the segment page, but nothing sweeps for it.
+- ~~A stranded breakdown has no automatic retry.~~ **Fixed.** `sweepStuckBreakdowns` runs in the
+  daily cron: a segment that reached `complete` with `breakdown_status` stuck at `pending` for
+  half an hour, with no live job and at least one analysed shot, is requeued. A `failed`
+  breakdown is deliberately not swept — that one is the owner's to retry, and re-running it
+  automatically would spend against a cause that has not changed.
 - **Cost is unmeasured against the real bill.** A segment costs one Claude vision call per
   shot plus one breakdown call over up to twelve frames. Confirm against the console after the
   first real week and adjust the plan caps in `lib/plans.ts`.
+
+## Post-build security audit
+
+Run after the build was complete, against the running app and the real database, with two real
+signed-in users plus an anonymous caller.
+
+**One real vulnerability, found and fixed.** `videos.poster_path` and `shots.poster_path` /
+`thumbnail_path` are signed with the service role and were client-writable. An authenticated
+user could point one of their own rows at another user's storage key and be handed a working
+signed URL to that file. Reproduced end to end before fixing: the attacker read a victim's
+private frame. Closed by migration `0027_protect_storage_paths.sql`, and guarded by four
+regression tests that were checked against the pre-fix trigger first — three of them fail
+without it.
+
+**Everything else held.** Every route was probed cross-user and anonymously: no owner data was
+read and nothing was mutated. The column-protection triggers rejected all thirteen
+pipeline-owned fields. Storage refused a cross-user download, an upload into another user's
+folder, a signed URL for someone else's object, and a public fetch. Row-level security returned
+empty sets for a stranger reading videos, shots and conversations directly through PostgREST.
+No client component imports a server-only module. Every internal link on every reachable page
+resolves; `robots.txt` disallows all ten flagged-off surfaces and the sitemap lists only the
+four public marketing URLs.
 
 ## Before deploying
 

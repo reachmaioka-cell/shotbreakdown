@@ -42,6 +42,69 @@ export async function sweepStuckVideos(staleMinutes = 30) {
   return requeued;
 }
 
+/**
+ * Recover segments whose ANALYSIS finished but whose breakdown never arrived.
+ *
+ * sweepStuckVideos only looks at videos still in a processing status, so a
+ * segment that reached `complete` with breakdown_status stuck at 'pending' —
+ * the enqueue was dropped, or a worker died between claiming the job and the
+ * failure hook running — is invisible to it. The breakdown is the product, so a
+ * segment sitting without one is the worst state to leave a user in silently.
+ *
+ * A terminal failure sets breakdown_status to 'failed' and is not swept: that
+ * one is the owner's to retry, and re-running it automatically would spend
+ * against a cause that has not changed.
+ */
+export async function sweepStuckBreakdowns(staleMinutes = 30) {
+  const admin = createAdminClient();
+  const cutoff = new Date(Date.now() - staleMinutes * 60 * 1000).toISOString();
+
+  const { data: stuck } = await admin
+    .from("videos")
+    .select("id, user_id")
+    .eq("status", "complete")
+    .eq("breakdown_status", "pending")
+    .lt("updated_at", cutoff)
+    .limit(20);
+
+  const requeued: string[] = [];
+  for (const video of stuck ?? []) {
+    const { count } = await admin
+      .from("processing_jobs")
+      .select("id", { count: "exact", head: true })
+      .eq("video_id", video.id)
+      .eq("job_type", "generate_segment_breakdown")
+      .in("status", ["pending", "running"]);
+
+    // A live job is already carrying this one; leave it alone.
+    if ((count ?? 0) > 0) continue;
+
+    // There must be something to break down. A segment whose every shot failed
+    // has nothing to say, and re-queueing it would fail forever.
+    const { count: shots } = await admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("video_id", video.id)
+      .eq("status", "complete");
+    if ((shots ?? 0) === 0) continue;
+
+    const { enqueueJob } = await import("@/lib/pipeline/queue");
+    const id = await enqueueJob(
+      "generate_segment_breakdown",
+      { videoId: video.id },
+      {
+        videoId: video.id as string,
+        userId: video.user_id as string | null,
+        dedupeKey: `segment-breakdown:${video.id}`,
+        priority: 3,
+      }
+    ).catch(() => null);
+    if (id) requeued.push(video.id as string);
+  }
+
+  return requeued;
+}
+
 export async function writePromptInsights(): Promise<{ skipped?: boolean; ok?: boolean }> {
   const admin = createAdminClient();
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();

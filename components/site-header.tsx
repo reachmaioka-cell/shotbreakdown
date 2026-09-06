@@ -94,7 +94,7 @@ export function SiteHeader() {
               href="/upload"
               className="inline-flex h-8 items-center rounded-[3px] bg-text-0 px-3 text-[12px] font-medium text-ink-0 hover:bg-white"
             >
-              Analyze a video
+              Break down a segment
             </Link>
 
             {me?.authed ? (

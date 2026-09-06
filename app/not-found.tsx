@@ -15,16 +15,16 @@ export default function NotFound() {
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
           <Link
-            href="/library"
+            href="/"
             className="inline-flex h-10 items-center rounded-[3px] border border-line px-4 text-[13px] text-text-0 hover:border-line-strong hover:bg-ink-2"
           >
-            Browse the library
+            Back to the start
           </Link>
           <Link
             href="/upload"
             className="inline-flex h-10 items-center rounded-[3px] bg-text-0 px-4 text-[13px] font-medium text-ink-0 hover:bg-white"
           >
-            Analyze a video
+            Break down a segment
           </Link>
         </div>
       </main>

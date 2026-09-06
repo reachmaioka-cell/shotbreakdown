@@ -1,5 +1,9 @@
+import { DEPARTMENT_LABELS, type Department } from "@/lib/validation";
+
 export type UserPreferences = {
   skill_level: "beginner" | "intermediate" | "pro" | null;
+  /** The department they actually work in. Decides who the breakdown leads with. */
+  role: string | null;
   primary_camera: string | null;
   lenses: string[];
   typical_work: string[];
@@ -18,6 +22,13 @@ export function formatAboutFilmmaker(prefs: UserPreferences | null): string | un
     lines.push("Skill: working DP. Skip basics. Name fixtures, ratios, and stop values.");
   } else if (prefs.skill_level === "intermediate") {
     lines.push("Skill: intermediate. Assume they know ISO/shutter; still name the gear.");
+  }
+
+  if (prefs.role && prefs.role !== "other") {
+    const label = DEPARTMENT_LABELS[prefs.role as Department] ?? prefs.role;
+    lines.push(
+      `Primary department: ${label}. Give that department the most detail and the most specific gear; still write every other department in full.`
+    );
   }
 
   if (prefs.primary_camera) {

@@ -8,7 +8,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { readSegmentBreakdown } from "@/lib/validation";
 
-/** Live processing status for the poller. Owner only. */
+/**
+ * Live processing status for the poller, plus the segment's own fields.
+ *
+ * Read through the caller's session client, so RLS decides: the owner always,
+ * and a signed-in reader of a public segment, which is the same audience the
+ * breakdown route already serves. A private segment 404s for everyone else.
+ */
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
@@ -50,10 +56,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   return NextResponse.json({ video, readyShots: readyShots ?? 0, breakdown });
 }
 
+// Trimmed before the length check, not after: a pasted question that ends in a
+// newline is inside the limit once trimmed, and rejecting it would be a 400 the
+// user cannot see the cause of. The refocus route validates the same `focus`
+// column the same way.
 const PatchBody = z
   .object({
-    title: z.string().max(200).optional(),
-    focus: z.string().max(500).optional(),
+    // A name, so it has to be one. Nulling the title on an empty submit loses
+    // the segment's name silently; a 400 leaves it as it was.
+    title: z.string().trim().min(1).max(200).optional(),
+    focus: z.string().trim().max(500).optional(),
   })
   .refine((body) => body.title !== undefined || body.focus !== undefined);
 
@@ -95,10 +107,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!video || video.user_id !== user.id) return jsonError("Not found", 404);
 
   const patch: Record<string, string | null> = {};
-  if (parsed.data.title !== undefined) patch.title = parsed.data.title.trim() || null;
+  if (parsed.data.title !== undefined) patch.title = parsed.data.title;
   // Clearing the box is how the uploader takes their question back off the
   // segment, so an empty focus is a null and not an empty string to answer.
-  if (parsed.data.focus !== undefined) patch.focus = parsed.data.focus.trim() || null;
+  if (parsed.data.focus !== undefined) patch.focus = parsed.data.focus || null;
 
   const { data: updated, error } = await supabase
     .from("videos")

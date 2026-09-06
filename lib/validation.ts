@@ -2,6 +2,41 @@ import { z } from "zod";
 
 const confidence = z.number().min(0).max(1);
 
+/**
+ * Every role that has to do something to put a shot on screen.
+ *
+ * The order is the order the work happens in on a real production, and it is
+ * the order the UI renders. All nine are always present in a breakdown: a
+ * department with nothing to do says so in one line, which is itself useful
+ * ("no VFX, this is entirely practical").
+ */
+export const DEPARTMENTS = [
+  "director",
+  "camera",
+  "lighting_grip",
+  "art_department",
+  "editorial",
+  "color",
+  "vfx",
+  "sound",
+  "producer",
+] as const;
+
+export type Department = (typeof DEPARTMENTS)[number];
+
+export const DEPARTMENT_LABELS: Record<Department, string> = {
+  director: "Director",
+  camera: "Camera",
+  lighting_grip: "Lighting and grip",
+  art_department: "Art department",
+  editorial: "Editorial",
+  color: "Colour",
+  vfx: "VFX",
+  sound: "Sound",
+  producer: "Producer",
+};
+
+
 export const SubmitLinkSchema = z.object({
   url: z.string().url(),
 });
@@ -115,6 +150,7 @@ export const PreferencesSchema = z.object({
   typical_work: z.array(z.string().max(40)).max(10).optional(),
   budget_band: z.enum(["under_500", "under_5000", "unlimited"]).nullable().optional(),
   tone: z.enum(["concise", "detailed"]).optional(),
+  role: z.enum([...DEPARTMENTS, "other"]).nullable().optional(),
 });
 
 export const AdminReviewSchema = z.object({
@@ -663,40 +699,6 @@ export function normalizeShotRecord(raw: ShotRecord): StoredShotRecord {
  * ShotMetadataSchema, so anything added there becomes editable through the
  * corrections endpoint. A generated document is not a facet to be corrected.
  * ------------------------------------------------------------------ */
-
-/**
- * Every role that has to do something to put a shot on screen.
- *
- * The order is the order the work happens in on a real production, and it is
- * the order the UI renders. All nine are always present in a breakdown: a
- * department with nothing to do says so in one line, which is itself useful
- * ("no VFX, this is entirely practical").
- */
-export const DEPARTMENTS = [
-  "director",
-  "camera",
-  "lighting_grip",
-  "art_department",
-  "editorial",
-  "color",
-  "vfx",
-  "sound",
-  "producer",
-] as const;
-
-export type Department = (typeof DEPARTMENTS)[number];
-
-export const DEPARTMENT_LABELS: Record<Department, string> = {
-  director: "Director",
-  camera: "Camera",
-  lighting_grip: "Lighting and grip",
-  art_department: "Art department",
-  editorial: "Editorial",
-  color: "Colour",
-  vfx: "VFX",
-  sound: "Sound",
-  producer: "Producer",
-};
 
 export const DIFFICULTIES = ["easy", "moderate", "hard", "specialist"] as const;
 

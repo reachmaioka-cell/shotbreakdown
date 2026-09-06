@@ -53,11 +53,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   if (!isOwner && video.visibility === "private") return jsonError("Not found", 404);
 
   const status = (video.breakdown_status as string | null) ?? "missing";
+  // breakdown_error is the raw pipeline/provider message (worker.ts stores
+  // Error.message verbatim), so it is the owner's to read, not a public
+  // reader's — they cannot act on it and it can name internals.
+  const error =
+    status === "failed" && isOwner ? ((video.breakdown_error as string | null) ?? null) : null;
   return Response.json({
     status,
     breakdown: readSegmentBreakdown(video.breakdown),
     focus: (video.focus as string | null) ?? null,
-    error: status === "failed" ? ((video.breakdown_error as string | null) ?? null) : null,
+    error,
   });
 }
 
@@ -106,17 +111,34 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   );
   if (limited) return limited;
 
-  let raw: unknown;
-  try {
-    raw = await request.json();
-  } catch {
-    return jsonError("Invalid JSON", 400);
+  // The body is optional: "regenerate, same question" is a bare POST with no
+  // body at all, which request.json() would reject as malformed.
+  let raw: unknown = {};
+  const bodyText = await request.text().catch(() => "");
+  if (bodyText.trim()) {
+    try {
+      raw = JSON.parse(bodyText);
+    } catch {
+      return jsonError("Invalid JSON", 400);
+    }
   }
   const parsed = Body.safeParse(raw);
   if (!parsed.success) return jsonError("Invalid input", 400);
 
   const already = await findActiveJob(dedupeKeyFor(id));
-  if (already) return Response.json({ status: "pending" });
+  if (already) {
+    // A queued job has not read videos.focus yet, so a question that arrives
+    // before it starts is still the one that gets answered. A running job has
+    // already read it, and rewriting focus underneath it would leave the stored
+    // question describing an answer to a different one.
+    if (parsed.data.focus !== undefined && already.status === "pending") {
+      await admin
+        .from("videos")
+        .update({ focus: parsed.data.focus || null })
+        .eq("id", id);
+    }
+    return Response.json({ status: "pending" });
+  }
 
   const update: Record<string, unknown> = {
     breakdown_status: "pending",

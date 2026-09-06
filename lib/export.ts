@@ -2,7 +2,12 @@ import { getCollection, type CollectionItem } from "@/lib/collections";
 import { humanize } from "@/lib/filters";
 import { formatDuration, formatTimecode, getShot, searchShots } from "@/lib/shots";
 import { fetchAnalysisImage } from "@/lib/media";
-import type { ShotMetadata } from "@/lib/validation";
+import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  readSegmentBreakdown,
+  type ShotMetadata,
+  type StoredSegmentBreakdown,
+} from "@/lib/validation";
 
 export type ExportFormat = "pdf" | "csv" | "json";
 export type ExportResourceType = "collection" | "video" | "shot";
@@ -49,6 +54,12 @@ export type ExportPayload = {
   subtitle: string;
   kind: string;
   rows: ExportRow[];
+  /**
+   * A segment export carries its breakdown. The rows describe the shots; the
+   * breakdown is the answer, and exporting the shots without it would ship the
+   * evidence and drop the conclusion.
+   */
+  breakdown?: StoredSegmentBreakdown | null;
 };
 
 function metaRow(
@@ -176,11 +187,22 @@ export async function buildExportPayload(
         })
     );
 
+    const admin = createAdminClient();
+    const { data: videoRow } = await admin
+      .from("videos")
+      .select("title, breakdown, focus")
+      .eq("id", resourceId)
+      .maybeSingle();
+    const breakdown = readSegmentBreakdown(videoRow?.breakdown);
+
     return {
-      title: result.shots[0].videoTitle ?? "Video",
-      subtitle: `${rows.length} detected shot${rows.length === 1 ? "" : "s"}`,
+      title: (videoRow?.title as string | null) ?? result.shots[0].videoTitle ?? "Segment",
+      subtitle: breakdown
+        ? breakdown.title
+        : `${rows.length} shot${rows.length === 1 ? "" : "s"} in this segment`,
       kind: "video",
       rows,
+      breakdown,
     };
   }
 
@@ -236,6 +258,7 @@ export function toJson(payload: ExportPayload): string {
       kind: payload.kind,
       exportedAt: new Date().toISOString(),
       shotCount: payload.rows.length,
+      breakdown: payload.breakdown ?? undefined,
       // Thumbnail URLs are short-lived signed links; they do not belong in an
       // exported file that outlives them.
       shots: payload.rows.map((row) => {

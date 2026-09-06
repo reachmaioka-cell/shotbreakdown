@@ -45,11 +45,23 @@ async function main() {
           const html = await res.text();
           if (!html.includes("Library")) throw new Error("missing heading");
         })
-      : await check("GET /library redirects guests to login", async () => {
+      : await check("GET /library sends guests to login and leaks no shots", async () => {
           const res = await fetch(`${BASE}/library`, { redirect: "manual" });
-          if (res.status !== 307 && res.status !== 302) throw new Error(`status ${res.status}`);
           const loc = res.headers.get("location") ?? "";
-          if (!loc.includes("/auth/login")) throw new Error(`location ${loc}`);
+          const body = res.status === 200 ? await res.text() : "";
+          /*
+           * A dynamic App Router page has already flushed its shell by the time
+           * redirect() throws, so Next carries the redirect in the streamed RSC
+           * payload with a 200 rather than a 307. Both shapes are correct; what
+           * matters is that the guest is sent to login and that redirect()
+           * short-circuited before any shot query ran.
+           */
+          const redirected =
+            loc.includes("/auth/login") || body.includes("/auth/login?next=/library");
+          if (!redirected) throw new Error(`no redirect to login (status ${res.status})`);
+          if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.test(body)) {
+            throw new Error("shot ids present in a guest response");
+          }
         })
   );
 

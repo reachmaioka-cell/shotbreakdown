@@ -477,3 +477,117 @@ suite("processing job queue", () => {
     created.push(distinct!);
   });
 });
+
+suite("storage paths are pipeline-owned", () => {
+  const admin = createAdminClient();
+  let owner: Actor;
+  let attacker: Actor;
+  let videoId: string;
+  let shotId: string;
+
+  beforeAll(async () => {
+    owner = await makeActor(admin, "sp-owner");
+    attacker = await makeActor(admin, "sp-attacker");
+
+    const { data: video } = await admin
+      .from("videos")
+      .insert({
+        user_id: attacker.id,
+        source_type: "video_upload",
+        title: "attacker segment",
+        status: "complete",
+        content_hash: `sp:${Date.now()}`,
+        poster_path: `${attacker.id}/mine.jpg`,
+      })
+      .select("id")
+      .single();
+    videoId = video!.id as string;
+
+    const { data: shot } = await admin
+      .from("shots")
+      .insert({
+        video_id: videoId,
+        user_id: attacker.id,
+        shot_index: 0,
+        start_seconds: 0,
+        end_seconds: 5,
+        status: "complete",
+        poster_path: `${attacker.id}/mine.jpg`,
+        thumbnail_path: `${attacker.id}/mine-thumb.jpg`,
+      })
+      .select("id")
+      .single();
+    shotId = shot!.id as string;
+  });
+
+  afterAll(async () => {
+    await admin.auth.admin.deleteUser(owner.id).catch(() => {});
+    await admin.auth.admin.deleteUser(attacker.id).catch(() => {});
+  });
+
+  /*
+   * poster_path and thumbnail_path are handed to resolveMediaUrl(), which signs
+   * them with the SERVICE ROLE and never re-checks who owns the object. A user
+   * who could point one of their own rows at someone else's key would be handed
+   * a working signed URL to that file. This was reachable and is now blocked by
+   * the column-protection trigger; these tests are what keep it blocked.
+   */
+  it("a user cannot point their own video's poster at another user's file", async () => {
+    const victimKey = `${owner.id}/victim-private.jpg`;
+    const { error } = await attacker.client
+      .from("videos")
+      .update({ poster_path: victimKey })
+      .eq("id", videoId);
+    expect(error).not.toBeNull();
+
+    const { data } = await admin.from("videos").select("poster_path").eq("id", videoId).single();
+    expect(data?.poster_path).not.toBe(victimKey);
+  });
+
+  it("a user cannot point their own shot's poster or thumbnail at another user's file", async () => {
+    const victimKey = `${owner.id}/victim-private.jpg`;
+
+    const poster = await attacker.client
+      .from("shots")
+      .update({ poster_path: victimKey })
+      .eq("id", shotId);
+    expect(poster.error).not.toBeNull();
+
+    const thumb = await attacker.client
+      .from("shots")
+      .update({ thumbnail_path: victimKey })
+      .eq("id", shotId);
+    expect(thumb.error).not.toBeNull();
+
+    const { data } = await admin
+      .from("shots")
+      .select("poster_path, thumbnail_path")
+      .eq("id", shotId)
+      .single();
+    expect(data?.poster_path).not.toBe(victimKey);
+    expect(data?.thumbnail_path).not.toBe(victimKey);
+  });
+
+  it("a user cannot overwrite the model's own record, but corrections stay open", async () => {
+    const forged = await attacker.client
+      .from("shots")
+      .update({ metadata: { one_line_summary: "forged" } })
+      .eq("id", shotId);
+    expect(forged.error).not.toBeNull();
+
+    // metadata_edits is where a correction belongs, and it must still be writable.
+    const corrected = await attacker.client
+      .from("shots")
+      .update({ metadata_edits: { "composition.shot_size": "wide" } })
+      .eq("id", shotId);
+    expect(corrected.error).toBeNull();
+  });
+
+  it("leaves the owner their own naming, question and sharing", async () => {
+    const mine = await attacker.client
+      .from("videos")
+      .update({ title: "renamed", focus: "my question", visibility: "unlisted" })
+      .eq("id", videoId);
+    expect(mine.error).toBeNull();
+  });
+});

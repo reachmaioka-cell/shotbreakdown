@@ -13,7 +13,6 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { createAdminClient } from "../lib/supabase/admin";
 import { UPLOAD_BUCKET } from "../lib/constants";
-import { enqueueJob } from "../lib/pipeline/queue";
 import { drainQueue } from "../lib/pipeline/worker";
 import { DEPARTMENTS, DEPARTMENT_LABELS, readSegmentBreakdown } from "../lib/validation";
 

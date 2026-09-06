@@ -83,9 +83,30 @@ type SearchRow = {
   total_count: number;
 };
 
-async function toCard(row: SearchRow): Promise<ShotCard> {
+async function videoSourceUrls(
+  admin: ReturnType<typeof createAdminClient>,
+  videoIds: string[]
+): Promise<Map<string, string | null>> {
+  const map = new Map<string, string | null>();
+  const unique = [...new Set(videoIds.filter(Boolean))];
+  const chunkSize = 80;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const { data, error } = await admin.from("videos").select("id, source_url").in("id", chunk);
+    if (error) {
+      console.error("videoSourceUrls", error.message);
+      break;
+    }
+    for (const row of data ?? []) {
+      map.set(row.id as string, (row.source_url as string | null) ?? null);
+    }
+  }
+  return map;
+}
+
+async function toCard(row: SearchRow, videoSourceUrl?: string | null): Promise<ShotCard> {
   const stored = await resolveMediaUrl(row.thumbnail_path ?? row.poster_path);
-  const thumbnailUrl = preferClipFrame(stored);
+  const thumbnailUrl = preferClipFrame(stored, videoSourceUrl);
   return {
     id: row.id,
     slug: row.slug,
@@ -95,7 +116,10 @@ async function toCard(row: SearchRow): Promise<ShotCard> {
     summary: row.summary,
     description: row.description,
     thumbnailUrl,
-    sourceUrl: clipSourceUrl({ thumbnailUrl: stored ?? thumbnailUrl }),
+    sourceUrl: clipSourceUrl({
+      sourceUrl: videoSourceUrl,
+      thumbnailUrl: stored ?? thumbnailUrl,
+    }),
     startSeconds: Number(row.start_seconds),
     endSeconds: Number(row.end_seconds),
     durationSeconds: Number(row.duration_seconds),
@@ -171,7 +195,13 @@ export async function searchShots(options: {
   if (error) throw new Error(`search_shots: ${error.message}`);
 
   const rows = (data ?? []) as SearchRow[];
-  const shots = await Promise.all(rows.map(toCard));
+  const sourceByVideo = await videoSourceUrls(
+    admin,
+    rows.map((row) => row.video_id)
+  );
+  const shots = await Promise.all(
+    rows.map((row) => toCard(row, sourceByVideo.get(row.video_id) ?? null))
+  );
 
   return {
     shots,
@@ -229,10 +259,16 @@ export async function findSimilarShots(options: {
     similarity: number;
   }[];
 
+  const sourceByVideo = await videoSourceUrls(
+    admin,
+    rows.map((row) => row.video_id)
+  );
+
   return Promise.all(
     rows.map(async (row) => {
       const stored = await resolveMediaUrl(row.thumbnail_path);
-      const thumbnailUrl = preferClipFrame(stored);
+      const videoSourceUrl = sourceByVideo.get(row.video_id) ?? null;
+      const thumbnailUrl = preferClipFrame(stored, videoSourceUrl);
       return {
         id: row.id,
         slug: row.slug,
@@ -242,7 +278,10 @@ export async function findSimilarShots(options: {
         summary: row.summary,
         description: null,
         thumbnailUrl,
-        sourceUrl: clipSourceUrl({ thumbnailUrl: stored ?? thumbnailUrl }),
+        sourceUrl: clipSourceUrl({
+          sourceUrl: videoSourceUrl,
+          thumbnailUrl: stored ?? thumbnailUrl,
+        }),
         startSeconds: 0,
         endSeconds: 0,
         durationSeconds: 0,

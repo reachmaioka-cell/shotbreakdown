@@ -10,6 +10,7 @@
     "db:migrate": "node --env-file=.env.local scripts/apply-migrations.mjs",
     "db:seed": "npx tsx --env-file=.env.local scripts/seed-library.ts",
     "db:seed:analyze": "npx tsx --env-file=.env.local scripts/seed-library.ts --analyze",
+    "db:seed:music": "npx tsx --env-file=.env.local scripts/seed-music-clips.ts",
     "db:ingest-knowledge": "npx tsx --env-file=.env.local scripts/ingest-knowledge.ts",
     "learning:worker": "npx tsx --env-file=.env.local scripts/learning-worker.ts",
     "learning:tick": "npx tsx --env-file=.env.local scripts/learning-tick.ts",

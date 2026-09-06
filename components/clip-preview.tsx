@@ -3,8 +3,10 @@
 import Image from "next/image";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
+  clipEmbedUrl,
   clipPosterCandidates,
   extractYoutubeId,
+  isClipBoundedSpan,
   isYoutubeThumbUrl,
   youtubeScrubFrameUrls,
 } from "@/lib/clip";
@@ -22,15 +24,17 @@ function mediaSnapshot(query: string, fallback = false) {
 }
 
 /**
- * Grid thumbnail. On a mouse, moving across the still scrubs numbered frames
- * from the clip so you can tell whether it is worth opening. Touch skips hover
- * and just shows the still — tap is handled by the parent link. The shot page
- * is where the real video plays; embedding YouTube on every tile hid the scrub
- * and often failed to play.
+ * Grid thumbnail. Whole-video cards (start and end unset) scrub numbered
+ * YouTube stills on hover. Bounded shots — a detected span inside a longer
+ * video — keep the extracted still and optionally play that span only.
+ * Numbered stills are ~0/25/50/75% of the full MV, so they must not be used
+ * when end > start.
  */
 export function ClipPreview({
   sourceUrl,
   thumbnailUrl,
+  startSeconds = 0,
+  endSeconds = 0,
   alt = "",
   sizes,
   className = "",
@@ -47,12 +51,32 @@ export function ClipPreview({
   priority?: boolean;
   enableHover?: boolean;
 }) {
+  const bounded = isClipBoundedSpan(startSeconds, endSeconds);
   const posters = useMemo(
     () => clipPosterCandidates({ sourceUrl, thumbnailUrl }),
     [sourceUrl, thumbnailUrl]
   );
   const ytId = extractYoutubeId(sourceUrl ?? "") ?? extractYoutubeId(thumbnailUrl ?? "");
-  const scrubFrames = useMemo(() => (ytId ? youtubeScrubFrameUrls(ytId) : []), [ytId]);
+  const scrubFrames = useMemo(
+    () => (ytId && !bounded ? youtubeScrubFrameUrls(ytId) : []),
+    [ytId, bounded]
+  );
+  const hoverEmbed = useMemo(
+    () =>
+      bounded
+        ? clipEmbedUrl({
+            sourceUrl,
+            thumbnailUrl,
+            startSeconds,
+            endSeconds,
+            autoplay: true,
+            mute: true,
+            controls: false,
+            loop: false,
+          })
+        : null,
+    [bounded, sourceUrl, thumbnailUrl, startSeconds, endSeconds]
+  );
   const reducedMotion = useSyncExternalStore(
     subscribeMedia("(prefers-reduced-motion: reduce)"),
     mediaSnapshot("(prefers-reduced-motion: reduce)"),
@@ -70,10 +94,12 @@ export function ClipPreview({
   const [deadScrub, setDeadScrub] = useState<Set<number>>(() => new Set());
 
   const poster = posters[posterIndex] ?? null;
-  const canHover = enableHover && finePointer && !reducedMotion && scrubFrames.length > 1;
+  const canHoverScrub = enableHover && finePointer && !reducedMotion && scrubFrames.length > 1;
+  const canHoverEmbed = enableHover && finePointer && !reducedMotion && !!hoverEmbed;
+  const canHover = canHoverScrub || canHoverEmbed;
 
   useEffect(() => {
-    if (!canHover) return;
+    if (!canHoverScrub) return;
     const frames = scrubFrames.map((src) => {
       const img = new window.Image();
       img.src = src;
@@ -84,7 +110,7 @@ export function ClipPreview({
         img.src = "";
       });
     };
-  }, [canHover, scrubFrames]);
+  }, [canHoverScrub, scrubFrames]);
 
   function beginHover() {
     if (!canHover) return;
@@ -97,7 +123,7 @@ export function ClipPreview({
   }
 
   function scrubAt(clientX: number, currentTarget: HTMLDivElement) {
-    if (!canHover) return;
+    if (!canHoverScrub) return;
     const rect = currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
     const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
@@ -109,11 +135,13 @@ export function ClipPreview({
     if (pick) setScrubIndex(pick.i);
   }
 
-  const liveScrub = hovering && canHover && !deadScrub.has(scrubIndex) ? scrubFrames[scrubIndex] : null;
+  const liveScrub = hovering && canHoverScrub && !deadScrub.has(scrubIndex) ? scrubFrames[scrubIndex] : null;
+  const liveEmbed = hovering && canHoverEmbed ? hoverEmbed : null;
 
   return (
     <div
       className={`relative overflow-hidden bg-ink-2 ${className}`}
+      data-clip-bounded={bounded ? "true" : "false"}
       onPointerEnter={(event) => {
         if (event.pointerType === "mouse") beginHover();
       }}
@@ -167,6 +195,16 @@ export function ClipPreview({
               return next;
             })
           }
+        />
+      ) : null}
+
+      {liveEmbed ? (
+        <iframe
+          src={liveEmbed}
+          title=""
+          className="absolute inset-0 h-full w-full pointer-events-none"
+          allow="autoplay; encrypted-media"
+          tabIndex={-1}
         />
       ) : null}
     </div>

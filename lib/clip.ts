@@ -151,6 +151,16 @@ export function clipPosterCandidates(input: {
   return out;
 }
 
+/** True when this shot is a span inside a longer video, not the whole clip. */
+export function isClipBoundedSpan(
+  startSeconds?: number | null,
+  endSeconds?: number | null
+): boolean {
+  const start = Number(startSeconds ?? 0);
+  const end = Number(endSeconds ?? 0);
+  return Number.isFinite(start) && Number.isFinite(end) && end > start;
+}
+
 export type ClipEmbedOptions = {
   sourceUrl?: string | null;
   thumbnailUrl?: string | null;
@@ -174,10 +184,15 @@ export function clipEmbedUrl(input: ClipEmbedOptions): string | null {
         : source
           ? youtubeStartSeconds(source)
           : 0;
+    const end =
+      input.endSeconds != null && input.endSeconds > start
+        ? Math.floor(input.endSeconds)
+        : null;
     const autoplay = input.autoplay !== false;
     const mute = input.mute !== false;
     const controls = input.controls === true;
-    const loop = input.loop !== false;
+    // loop=1 requires a playlist and restarts the whole video, dropping start/end.
+    const loop = end != null ? false : input.loop !== false;
     const params = new URLSearchParams({
       autoplay: autoplay ? "1" : "0",
       mute: mute ? "1" : "0",
@@ -192,9 +207,7 @@ export function clipEmbedUrl(input: ClipEmbedOptions): string | null {
       params.set("playlist", ytId);
     }
     if (start > 0) params.set("start", String(start));
-    if (input.endSeconds != null && input.endSeconds > start) {
-      params.set("end", String(Math.floor(input.endSeconds)));
-    }
+    if (end != null) params.set("end", String(end));
     if (input.enableJsApi) {
       params.set("enablejsapi", "1");
       if (input.origin) params.set("origin", input.origin);

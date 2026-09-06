@@ -4,6 +4,7 @@ import {
   clipPosterCandidates,
   clipSourceUrl,
   extractYoutubeId,
+  isClipBoundedSpan,
   isYoutubeBrandedPoster,
   isYoutubeFrameStill,
   preferClipFrame,
@@ -108,10 +109,46 @@ describe("YouTube clip frames vs branded posters", () => {
     expect(unmuted).toContain("mute=0");
   });
 
+  it("sets start/end on a bounded clip and never loops the whole video", () => {
+    const mid = clipEmbedUrl({
+      sourceUrl: `https://www.youtube.com/watch?v=${ID}`,
+      startSeconds: 14.2,
+      endSeconds: 18.8,
+    });
+    expect(mid).toContain("start=14");
+    expect(mid).toContain("end=18");
+    expect(mid).not.toContain("loop=1");
+    expect(mid).not.toContain("playlist=");
+
+    const fromZero = clipEmbedUrl({
+      sourceUrl: `https://www.youtube.com/watch?v=${ID}`,
+      startSeconds: 0,
+      endSeconds: 3.2,
+      loop: true,
+    });
+    expect(fromZero).toContain("end=3");
+    expect(fromZero).not.toMatch(/[?&]start=/);
+    expect(fromZero).not.toContain("loop=1");
+  });
+
+  it("treats end > start as a bounded span", () => {
+    expect(isClipBoundedSpan(0, 0)).toBe(false);
+    expect(isClipBoundedSpan(0, 3.2)).toBe(true);
+    expect(isClipBoundedSpan(12, 18)).toBe(true);
+    expect(isClipBoundedSpan(18, 12)).toBe(false);
+  });
+
   it("reconstructs a watch URL from a thumbnail", () => {
     expect(clipSourceUrl({ thumbnailUrl: `https://i.ytimg.com/vi/${ID}/sd1.jpg` })).toBe(
       `https://www.youtube.com/watch?v=${ID}`
     );
+  });
+
+  it("keeps an explicit watch URL when the thumb is a storage still", () => {
+    const stored = "http://127.0.0.1:54321/storage/v1/object/sign/uploads/editorial/abc/0.jpg?token=x";
+    const watch = `https://www.youtube.com/watch?v=${ID}`;
+    expect(clipSourceUrl({ sourceUrl: watch, thumbnailUrl: stored })).toBe(watch);
+    expect(clipSourceUrl({ thumbnailUrl: stored })).toBe(null);
   });
 
   it("maps four scrub frames across the clip", () => {

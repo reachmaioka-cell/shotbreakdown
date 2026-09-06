@@ -619,12 +619,14 @@ export function SegmentBreakdown({
                 <details
                   key={dept.role}
                   open={isOpen}
-                  onToggle={(event) =>
-                    setExpanded((prev) => ({
-                      ...prev,
-                      [dept.role]: event.currentTarget.open,
-                    }))
-                  }
+                  onToggle={(event) => {
+                    // Read the element NOW: React nulls event.currentTarget the
+                    // moment the handler returns, and a state updater can be
+                    // re-invoked during render (it always is under StrictMode),
+                    // where reading it would throw and take the page down.
+                    const isNowOpen = event.currentTarget.open;
+                    setExpanded((prev) => ({ ...prev, [dept.role]: isNowOpen }));
+                  }}
                   className="group border-b border-line"
                 >
                   <summary

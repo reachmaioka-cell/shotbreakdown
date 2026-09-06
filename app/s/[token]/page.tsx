@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { ClipPlayer } from "@/components/clip-player";
 import { CollectionBoard } from "@/components/collection-board";
 import { ExportMenu } from "@/components/export-menu";
+import { SegmentBreakdown } from "@/components/segment/segment-breakdown";
 import { ShotMetadataPanel } from "@/components/shot-metadata";
 import { SiteFooter } from "@/components/site-footer";
 import { getCollection } from "@/lib/collections";
@@ -12,6 +13,7 @@ import { humanize } from "@/lib/filters";
 import { resolveShare } from "@/lib/shares";
 import { formatDuration, formatTimecode, getShot, searchShots } from "@/lib/shots";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { readSegmentBreakdown } from "@/lib/validation";
 import { trackAsync } from "@/lib/analytics";
 
 export const dynamic = "force-dynamic";
@@ -75,7 +77,9 @@ export default async function SharePage({ params }: { params: Params }) {
     const admin = createAdminClient();
     const { data: video } = await admin
       .from("videos")
-      .select("id, title, duration_seconds, shot_count, source_type")
+      .select(
+        "id, title, duration_seconds, shot_count, source_type, focus, breakdown, segment_start, segment_end, source_duration_seconds"
+      )
       .eq("id", share.resourceId)
       .maybeSingle();
     if (!video) notFound();
@@ -87,19 +91,43 @@ export default async function SharePage({ params }: { params: Params }) {
       scope: "mine",
     });
     const shots = [...result.shots].sort((a, b) => a.shotIndex - b.shotIndex);
+    const breakdown = readSegmentBreakdown(video.breakdown);
 
     return (
       <div className="min-h-screen flex flex-col">
         <ShareHeader />
         <main id="main" className="flex-1 w-full mx-auto max-w-[1400px] px-4 sm:px-6 py-8">
-          <p className="eyebrow mb-1">Shot breakdown</p>
-          <h1 className="text-[22px] font-medium text-text-0">{video.title ?? "Untitled video"}</h1>
+          <p className="eyebrow mb-1">Segment breakdown</p>
+          <h1 className="text-[22px] font-medium text-text-0">
+            {breakdown?.title ?? video.title ?? "Untitled segment"}
+          </h1>
           <p className="mt-1.5 mb-6 text-[12px] text-text-3">
             {shots.length} shot{shots.length === 1 ? "" : "s"}
             {video.duration_seconds ? ` · ${formatDuration(Number(video.duration_seconds))}` : ""}
             {" · "}
             {humanize(video.source_type as string)}
           </p>
+
+          {breakdown ? (
+            <div className="mb-10">
+              {/*
+                * A shared link is read-only by design: no Ask, no refocus, no
+                * regeneration. Those spend the owner's budget and belong to
+                * them, not to whoever holds the link.
+                */}
+              <SegmentBreakdown
+                breakdown={breakdown}
+                shots={shots.map((shot) => ({
+                  id: shot.id,
+                  shotIndex: shot.shotIndex,
+                  thumbnailUrl: shot.thumbnailUrl,
+                  timecode: `${formatTimecode(shot.startSeconds)}-${formatTimecode(shot.endSeconds)}`,
+                }))}
+              />
+            </div>
+          ) : null}
+
+          <h2 className="eyebrow mb-3">Shots in this segment</h2>
 
           <div className="shot-grid">
             {shots.map((shot) => (

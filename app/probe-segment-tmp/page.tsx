@@ -42,6 +42,7 @@ export default function Probe() {
   return (
     <main className="mx-auto max-w-4xl p-8 flex flex-col gap-8">
       <BreakdownStatus videoId="00000000-0000-0000-0000-000000000000" status={null} />
+      <BreakdownStatus videoId="11111111-1111-1111-1111-111111111111" status="pending" />
       <BreakdownStatus videoId="00000000-0000-0000-0000-000000000000" status="failed" error="model refused" />
       <RefocusDialog videoId="00000000-0000-0000-0000-000000000000" focus={fixture.focus} />
       <SegmentBreakdown breakdown={fixture} shots={shots} openRole="lighting_grip" segmentSeconds={12} />

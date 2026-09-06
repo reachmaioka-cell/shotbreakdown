@@ -7,6 +7,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { UpgradedBanner } from "@/components/upgraded-banner";
 import { getAppUrl } from "@/lib/env";
+import { DEPARTMENTS, DEPARTMENT_LABELS } from "@/lib/validation";
 import { createClient } from "@/lib/supabase/server";
 
 // Reading the session cookie to send signed-in users straight to the app rules
@@ -49,6 +50,25 @@ const STEPS = [
     n: "04",
     title: "You get one breakdown, department by department",
     body: "Not a pile of per-shot cards. One document for the segment, written for the people who have to make it.",
+  },
+];
+
+const SECTIONS = [
+  {
+    title: "Your question, answered first",
+    body: "If you asked something, that answer opens the document, in the voice of the department it concerns.",
+  },
+  {
+    title: "What happens",
+    body: "Who is in it, where they are, what they do, and what turns. The setting, and how the segment was covered.",
+  },
+  {
+    title: "Every shot, and every cut",
+    body: "Shot by shot with timecodes: what happens in it, how it was made, and why the cut into and out of it lands where it does.",
+  },
+  {
+    title: "Shot list, prep and budget",
+    body: "A shot list you can hand to a crew, what has to be true before the camera rolls, and three budget tiers from a phone to a funded shoot.",
   },
 ];
 
@@ -142,9 +162,42 @@ export default async function Home() {
               again department by department, so the people who have to build it each get their
               own part of the answer.
             </p>
-            {/* TODO(phase-3): render content/sample-segment-breakdown.json via SegmentBreakdown */}
-            <div className="mt-6 rounded-[3px] border border-dashed border-line bg-ink-1 px-4 py-10 text-center text-[13px] text-text-3">
-              A worked sample breakdown goes here.
+            {/*
+              * The shape of the answer, not a sample of one. Writing a
+              * convincing fake breakdown here would be the one dishonest thing
+              * on the page: everything listed below is a real section of the
+              * real output, named from the same vocabulary the pipeline uses.
+              */}
+            <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,22rem)_1fr]">
+              <ol className="flex flex-col gap-0 border-t border-line">
+                {SECTIONS.map((section) => (
+                  <li key={section.title} className="border-b border-line py-3">
+                    <h3 className="text-[14px] text-text-0">{section.title}</h3>
+                    <p className="mt-1 text-[13px] leading-relaxed text-text-2">{section.body}</p>
+                  </li>
+                ))}
+              </ol>
+
+              <div>
+                <p className="eyebrow mb-3">And a brief for every department</p>
+                <ul className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                  {DEPARTMENTS.map((role) => (
+                    <li
+                      key={role}
+                      className="flex items-baseline gap-2 border-b border-line py-2 text-[13px] text-text-1"
+                    >
+                      <span aria-hidden className="h-1 w-1 shrink-0 rounded-full bg-accent" />
+                      {DEPARTMENT_LABELS[role]}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-4 max-w-lg text-[13px] leading-relaxed text-text-2">
+                  Each one gets a headline, ordered steps, the gear with a cheap substitute
+                  beside it, and the mistakes that would miss this particular shot. A
+                  department with nothing to do says so in one line, which is worth knowing
+                  too.
+                </p>
+              </div>
             </div>
           </div>
         </section>

@@ -169,7 +169,9 @@ export function UploadForm({
   function toggleTrim() {
     const next = !trimOpen;
     // A selection the user can no longer see must never be the one submitted.
-    if (!next) setRange(durationKnown ? { start: 0, end: duration } : { start: 0, end: 0 });
+    // Only reachable with a readable duration: an undecodable file gets no
+    // toggle at all, precisely so its typed range is never hidden from view.
+    if (!next && durationKnown) setRange({ start: 0, end: duration });
     setTrimOpen(next);
   }
 
@@ -335,6 +337,17 @@ export function UploadForm({
               Segments are limited to {formatDurationLimit(maxSeconds)} on your plan. Pick the
               part you want broken down.
             </p>
+          ) : decodeFailed ? (
+            /*
+              No toggle for a file the browser could not decode. Collapsing is
+              what clears the range, and the typed in and out points live in the
+              trimmer: hiding them would leave the fields showing a selection
+              this form would no longer submit. Blank fields already mean "the
+              whole file", so there is nothing a toggle would add.
+            */
+            <p className="text-[12px] text-text-3">
+              Leave the in and out points blank to break down the whole file.
+            </p>
           ) : (
             <button
               type="button"
@@ -351,7 +364,7 @@ export function UploadForm({
             Mounted even while collapsed: the duration is read from the file
             here, and it is what decides whether trimming is optional at all.
           */}
-          <div id={trimmerId} hidden={!mustTrim && !trimOpen}>
+          <div id={trimmerId} hidden={!mustTrim && !decodeFailed && !trimOpen}>
             <SegmentTrimmer
               key={`${file.name}-${file.size}-${file.lastModified}`}
               file={file}

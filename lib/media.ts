@@ -16,6 +16,47 @@ export async function resolveMediaUrl(pathOrUrl: string | null | undefined): Pro
   return data.signedUrl;
 }
 
+/**
+ * Sign many paths in one round trip.
+ *
+ * A grid of sixty segment posters is sixty separate signing calls through
+ * resolveMediaUrl, all of them blocking first paint. createSignedUrls does the
+ * same work in one request. Values that are already URLs pass straight through,
+ * so callers can hand it a mixed list.
+ */
+export async function resolveMediaUrlMap(
+  paths: (string | null | undefined)[]
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const toSign: string[] = [];
+
+  for (const path of paths) {
+    if (!path) continue;
+    if (isHttpUrl(path)) {
+      map.set(path, path);
+      continue;
+    }
+    if (!map.has(path)) toSign.push(path);
+  }
+
+  const unique = [...new Set(toSign)];
+  if (unique.length === 0) return map;
+
+  const admin = createAdminClient();
+  const { data, error } = await admin.storage
+    .from(UPLOAD_BUCKET)
+    .createSignedUrls(unique, SIGNED_URL_TTL_SEC);
+  if (error || !data) return map;
+
+  for (const row of data) {
+    // A path that failed to sign is simply absent; the caller renders a
+    // placeholder rather than a broken image.
+    if (row.error || !row.signedUrl || !row.path) continue;
+    map.set(row.path, row.signedUrl);
+  }
+  return map;
+}
+
 export async function resolveMediaUrls(paths: string[] | null | undefined): Promise<string[]> {
   if (!paths?.length) return [];
   const resolved = await Promise.all(paths.map((p) => resolveMediaUrl(p)));

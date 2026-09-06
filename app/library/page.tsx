@@ -1,14 +1,12 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ActiveFilters } from "@/components/active-filters";
-import { FilterRail } from "@/components/filter-rail";
+import { FilterSidebar, type ScopeTab } from "@/components/library/filter-sidebar";
+import { DensityToggle, JustifiedGrid } from "@/components/library/justified-grid";
 import { SearchBar } from "@/components/search-bar";
-import { ShotGrid } from "@/components/shot-grid";
-import { SiteFooter } from "@/components/site-footer";
-import { SiteHeader } from "@/components/site-header";
-import { GridSkeleton, LinkButton, ErrorState } from "@/components/ui/primitives";
+import { AppShell } from "@/components/shell/app-shell";
+import { LinkButton, ErrorState } from "@/components/ui/primitives";
 import { savedShotIds } from "@/lib/collections";
 import { getAppUrl } from "@/lib/env";
 import { FEATURES } from "@/lib/features";
@@ -113,6 +111,25 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
 
   const query = params.get("q") ?? undefined;
 
+  /*
+   * The shell's own data — who this is, and the segments the Segment group
+   * lists — does not depend on the search, so it is in flight while the search
+   * runs rather than after it.
+   */
+  const shellData = Promise.all([
+    user
+      ? supabase.from("profiles").select("plan, is_admin, display_name").eq("id", user.id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    user
+      ? supabase
+          .from("videos")
+          .select("id, title")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .limit(200)
+      : Promise.resolve({ data: [] }),
+  ]);
+
   let result: Awaited<ReturnType<typeof searchShots>>;
   let facets: Awaited<ReturnType<typeof shotFacetCounts>>;
   let searchFailed = false;
@@ -134,9 +151,34 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
     facets = {};
   }
 
-  const saved = searchFailed
-    ? new Set<string>()
-    : await savedShotIds(user?.id ?? null, result.shots.map((s) => s.id));
+  const [profileResult, segmentResult] = await shellData;
+  const profile = profileResult.data as {
+    plan?: string | null;
+    is_admin?: boolean | null;
+    display_name?: string | null;
+  } | null;
+  const segments = ((segmentResult.data ?? []) as { id: string; title: string | null }[]).map(
+    (row) => ({ id: row.id, title: row.title })
+  );
+
+  /*
+   * Which of these shots the viewer has saved, and which came out of a segment
+   * that has a breakdown. Both are one query over the whole page — the second
+   * keyed by segment rather than by shot, because a page of 48 frames is
+   * usually a handful of segments and the answer is the same for every frame in
+   * one — and neither depends on the other, so they go together rather than one
+   * after the other.
+   */
+  const resultVideoIds = searchFailed ? [] : [...new Set(result.shots.map((s) => s.videoId))];
+  const [saved, breakdownRows] = await Promise.all([
+    searchFailed
+      ? Promise.resolve(new Set<string>())
+      : savedShotIds(user?.id ?? null, result.shots.map((s) => s.id)),
+    resultVideoIds.length > 0
+      ? supabase.from("videos").select("id").in("id", resultVideoIds).eq("breakdown_status", "ready")
+      : Promise.resolve({ data: [] }),
+  ]);
+  const breakdownVideoIds = ((breakdownRows.data ?? []) as { id: string }[]).map((row) => row.id);
 
   const queryParams = new URLSearchParams(params.toString());
   queryParams.delete("offset");
@@ -154,7 +196,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
    * with the public library on) gets no tabs at all rather than tabs that lead
    * to an empty page.
    */
-  const tabs = !user
+  const tabs: ScopeTab[] = !user
     ? []
     : FEATURES.publicLibrary
       ? [
@@ -167,108 +209,101 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
           { key: "saved", label: "Saved", href: "/library?scope=saved" },
         ];
 
+  const plan = profile?.plan ?? "free";
+
   return (
-    <div className="min-h-screen flex flex-col">
-      <SiteHeader />
-
-      <main id="main" className="flex-1 w-full">
-        <div className="border-b border-line">
-          <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="flex-1 max-w-2xl">
-              <Suspense fallback={<div className="h-10 rounded-[3px] border border-line bg-ink-1" />}>
-                <SearchBar />
-              </Suspense>
-            </div>
-            {tabs.length > 0 ? (
-            <nav aria-label="Library scope" className="flex items-center gap-1 shrink-0">
-              {tabs.map((tab) => (
-                <Link
-                  key={tab.key}
-                  href={tab.href}
-                  className={`rounded-[3px] px-2.5 py-1.5 text-[12px] transition-colors ${
-                    scope === tab.key ? "bg-ink-2 text-text-0" : "text-text-2 hover:text-text-0"
-                  }`}
-                >
-                  {tab.label}
-                </Link>
-              ))}
-            </nav>
-            ) : null}
+    <AppShell
+      authed={Boolean(user)}
+      isPro={plan === "pro"}
+      // Only advertise the console when it is actually reachable.
+      isAdmin={Boolean(profile?.is_admin) && FEATURES.adminReview}
+      displayName={profile?.display_name ?? null}
+      email={user?.email ?? null}
+      /*
+       * The rail renders even when the search fell over. Its facet groups all
+       * disappear on their own (no counts, no options), but the scope tabs are
+       * navigation, not narrowing — dropping them would strand a user on the
+       * error page with no way back to Saved or My shots.
+       */
+      sidebar={
+        <Suspense fallback={null}>
+          <FilterSidebar facets={facets} segments={segments} scopes={tabs} scope={scope} />
+        </Suspense>
+      }
+      topbar={
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1 sm:max-w-md">
+            <Suspense
+              fallback={<div className="h-9 rounded-[var(--radius)] border border-line bg-ink-1" />}
+            >
+              <SearchBar />
+            </Suspense>
           </div>
-        </div>
-
-        <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-4">
-          {searchFailed ? (
-            <ErrorState
-              title="Library is temporarily unavailable"
-              body="The database did not respond. If you are running locally, start Supabase with npx supabase start."
-            />
-          ) : (
-            <>
-              <div className="mb-4">
-                <Suspense fallback={null}>
-                  <FilterRail facets={facets} />
-                </Suspense>
-              </div>
-
-              <Suspense fallback={null}>
-                <ActiveFilters />
-              </Suspense>
-
-              <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                <p className="text-[12px] text-text-2" aria-live="polite">
-                  {result.total.toLocaleString()} shot{result.total === 1 ? "" : "s"}
-                  {query ? (
-                    <>
-                      {" "}
-                      for <span className="text-text-0">“{query}”</span>
-                    </>
-                  ) : null}
-                </p>
-                {result.degraded ? (
-                  <p className="text-[12px] text-text-1">
-                    Matching on words only — search by meaning is temporarily unavailable.
-                  </p>
-                ) : null}
-              </div>
-
-              <Suspense fallback={<GridSkeleton />}>
-                <ShotGrid
-                  initialShots={result.shots}
-                  initialTotal={result.total}
-                  savedIds={[...saved]}
-                  queryString={queryString}
-                  emptyTitle={
-                    scope === "saved"
-                      ? "Nothing saved yet"
-                      : scope === "mine" && !narrowed
-                        ? "You haven't analyzed anything yet"
-                        : "No shots match"
-                  }
-                  emptyBody={
-                    scope === "saved"
-                      ? "Save a shot from the library and it will appear here."
-                      : scope === "mine" && !narrowed
-                        ? "Upload a segment — a scene, a take, a few seconds — and ShotBreakdown breaks down every department in it."
-                        : "Clear a filter or search for something looser."
-                  }
-                  emptyAction={
-                    scope === "mine" && !narrowed ? (
-                      <LinkButton href="/upload" variant="primary">
-                        Upload a segment
-                      </LinkButton>
-                    ) : scope === "saved" ? (
-                      <LinkButton href="/library">Browse the library</LinkButton>
-                    ) : null
-                  }
-                />
-              </Suspense>
-            </>
+          {/* A count of zero because the database is down is a lie, not a result. */}
+          {searchFailed ? null : (
+            <p className="hidden shrink-0 text-[12px] text-text-2 md:block">
+              {result.total.toLocaleString()} shot{result.total === 1 ? "" : "s"}
+              {query ? (
+                <>
+                  {" "}
+                  for <span className="text-text-0">“{query}”</span>
+                </>
+              ) : null}
+            </p>
           )}
+          <DensityToggle />
         </div>
-      </main>
+      }
+    >
+      {searchFailed ? (
+        <ErrorState
+          title="Library is temporarily unavailable"
+          body="The database did not respond. If you are running locally, start Supabase with npx supabase start."
+        />
+      ) : (
+        <>
+          <Suspense fallback={null}>
+            <ActiveFilters />
+          </Suspense>
 
-      <SiteFooter />
-    </div>
+          {result.degraded ? (
+            <p className="mb-3 text-[12px] text-text-1">
+              Matching on words only — search by meaning is temporarily unavailable.
+            </p>
+          ) : null}
+
+          <JustifiedGrid
+            initialShots={result.shots}
+            initialTotal={result.total}
+            savedIds={[...saved]}
+            breakdownVideoIds={breakdownVideoIds}
+            queryString={queryString}
+            emptyTitle={
+              scope === "saved"
+                ? "Nothing saved yet"
+                : scope === "mine" && !narrowed
+                  ? "You haven't analyzed anything yet"
+                  : "No shots match"
+            }
+            emptyBody={
+              scope === "saved"
+                ? "Save a shot from the library and it will appear here."
+                : scope === "mine" && !narrowed
+                  ? "Upload a segment — a scene, a take, a few seconds — and ShotBreakdown breaks down every department in it."
+                  : "Clear a filter or search for something looser."
+            }
+            emptyAction={
+              scope === "mine" && !narrowed ? (
+                <LinkButton href="/upload" variant="primary">
+                  Upload a segment
+                </LinkButton>
+              ) : scope === "saved" ? (
+                <LinkButton href="/library">Browse the library</LinkButton>
+              ) : null
+            }
+          />
+        </>
+      )}
+    </AppShell>
   );
 }

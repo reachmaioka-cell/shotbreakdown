@@ -48,6 +48,7 @@ export function FocusField({
   const uid = useId();
   const fieldId = `${uid}-focus`;
   const hintId = `${uid}-focus-hint`;
+  const optionalId = `${uid}-focus-optional`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const remaining = MAX_FOCUS_LENGTH - value.length;
@@ -71,7 +72,11 @@ export function FocusField({
         <label htmlFor={fieldId} className="text-[13px] text-text-0">
           What do you want to know about this segment?
         </label>
-        <span className="text-[12px] text-text-3">Optional</span>
+        {/* Described-by rather than part of the label: a screen reader should
+            hear that this is optional, but the question is the label. */}
+        <span id={optionalId} className="text-[12px] text-text-3">
+          Optional
+        </span>
       </div>
 
       <textarea
@@ -81,7 +86,7 @@ export function FocusField({
         disabled={disabled}
         maxLength={MAX_FOCUS_LENGTH}
         rows={3}
-        aria-describedby={hintId}
+        aria-describedby={`${optionalId} ${hintId}`}
         onChange={(e) => onChange(e.target.value)}
         className="w-full resize-y rounded-[3px] border border-line bg-ink-1 px-3 py-2 text-[13px] leading-relaxed text-text-0 placeholder-text-3 focus:border-line-strong focus:outline-none disabled:opacity-40"
       />

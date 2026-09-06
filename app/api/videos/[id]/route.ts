@@ -26,12 +26,24 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const { data: video, error } = await supabase
     .from("videos")
     .select(
-      "id, title, status, stage_detail, progress, shot_count, analyzed_shot_count, duration_seconds, error_message, error_code, created_at, updated_at, focus, segment_start, segment_end, source_duration_seconds, breakdown_status, breakdown_error, visibility"
+      "id, user_id, title, status, stage_detail, progress, shot_count, analyzed_shot_count, duration_seconds, error_message, error_code, created_at, updated_at, focus, segment_start, segment_end, source_duration_seconds, breakdown_status, breakdown_error, visibility"
     )
     .eq("id", id)
     .maybeSingle();
 
   if (error || !video) return jsonError("Not found", 404);
+
+  /*
+   * RLS lets any signed-in reader see a PUBLIC segment, so this row is not
+   * necessarily the caller's. breakdown_error and error_message hold the raw
+   * pipeline and provider messages verbatim; they are the owner's to read and
+   * mean nothing to anyone else. The page already blanks them server-side, and
+   * this route is polled into the same client state, so it has to agree.
+   */
+  const isOwner = video.user_id === user.id;
+  const payload = isOwner
+    ? video
+    : { ...video, breakdown_error: null, error_message: null, error_code: null };
 
   // The breakdown is a multi-kilobyte document and this route is polled every
   // couple of seconds while a segment processes. Fetching it in a second query,
@@ -53,7 +65,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     .eq("video_id", id)
     .eq("status", "complete");
 
-  return NextResponse.json({ video, readyShots: readyShots ?? 0, breakdown });
+  return NextResponse.json({ video: payload, readyShots: readyShots ?? 0, breakdown });
 }
 
 // Trimmed before the length check, not after: a pasted question that ends in a

@@ -119,24 +119,33 @@ function getServerSnapshot(): Snapshot {
   return EMPTY_SNAPSHOT;
 }
 
+function neighboursIn(current: Snapshot, currentId: string | null | undefined): Neighbours {
+  if (!currentId) return NO_NEIGHBOURS;
+  const key = currentId.startsWith("/") ? (lastSegment(currentId) ?? currentId) : currentId;
+  const at = current.index.get(key);
+  if (at === undefined) return NO_NEIGHBOURS;
+  const prev = at > 0 ? (current.entries[at - 1]?.href ?? null) : null;
+  const next = current.entries[at + 1]?.href ?? null;
+  if (!prev && !next) return NO_NEIGHBOURS;
+  return { prev, next };
+}
+
+/**
+ * A one-off read of the published set, for code that is not in a render —
+ * an event handler, or a test. Components want the hook below.
+ *
+ * `currentId` may be an id, a slug, or the shot's href.
+ */
+export function resultNeighbours(currentId: string | null | undefined): Neighbours {
+  return neighboursIn(snapshot, currentId);
+}
+
 /**
  * The hrefs either side of `currentId` in the published result set. Both are
  * null when nothing has been published (a deep link, or a fresh reload), which
  * is the signal to hide prev/next entirely rather than offer dead controls.
- *
- * `currentId` may be an id, a slug, or the shot's href.
  */
 export function useResultNeighbours(currentId: string | null | undefined): Neighbours {
   const current = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
-
-  return useMemo(() => {
-    if (!currentId) return NO_NEIGHBOURS;
-    const key = currentId.startsWith("/") ? (lastSegment(currentId) ?? currentId) : currentId;
-    const at = current.index.get(key);
-    if (at === undefined) return NO_NEIGHBOURS;
-    const prev = at > 0 ? (current.entries[at - 1]?.href ?? null) : null;
-    const next = current.entries[at + 1]?.href ?? null;
-    if (!prev && !next) return NO_NEIGHBOURS;
-    return { prev, next };
-  }, [current, currentId]);
+  return useMemo(() => neighboursIn(current, currentId), [current, currentId]);
 }

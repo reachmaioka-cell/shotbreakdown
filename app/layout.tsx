@@ -34,12 +34,22 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
+  modal,
 }: Readonly<{
   children: React.ReactNode;
+  /**
+   * Parallel route slot for shots opened over a grid. Renders after children so
+   * the overlay is last in the DOM; on every other route it is the slot's
+   * default, which is nothing.
+   */
+  modal: React.ReactNode;
 }>) {
   return (
     <html lang="en" className={`${plex.variable} h-full antialiased`}>
-      <body className={`${plex.className} min-h-full flex flex-col bg-black text-white`}>{children}</body>
+      <body className={`${plex.className} min-h-full flex flex-col bg-black text-white`}>
+        {children}
+        {modal}
+      </body>
     </html>
   );
 }

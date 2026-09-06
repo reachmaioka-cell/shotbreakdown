@@ -431,8 +431,18 @@ export function SegmentTrimmer({
           onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)}
           onSeeked={(e) => setPlayhead(e.currentTarget.currentTime)}
           onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
+          onPause={() => {
+            // The stop point belongs to one run of "Play selection". Left set
+            // after a pause, the rAF loop below would stop the very next press
+            // of the video's own play control the moment the playhead is past
+            // the out point — the preview would look broken.
+            stopAtRef.current = null;
+            setPlaying(false);
+          }}
+          onEnded={() => {
+            stopAtRef.current = null;
+            setPlaying(false);
+          }}
         />
       </div>
 

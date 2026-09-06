@@ -51,6 +51,13 @@ export function ActiveFilters() {
     const next = new URLSearchParams();
     const scope = params.get("scope");
     if (scope) next.set("scope", scope);
+    /*
+     * The search term is not a filter, and the sidebar's own "Clear all" keeps
+     * it. Two controls on the same screen with the same label have to do the
+     * same thing; the query has its own dismiss chip beside this one.
+     */
+    const query = params.get("q");
+    if (query) next.set("q", query);
     push(next);
   }
 

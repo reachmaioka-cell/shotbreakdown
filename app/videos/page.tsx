@@ -2,10 +2,11 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { SegmentsProgress } from "@/components/segment/segments-progress";
 import { AppShell } from "@/components/shell/app-shell";
 import { buttonClass } from "@/components/ui/primitives";
 import { FEATURES } from "@/lib/features";
-import { resolveMediaUrl } from "@/lib/media";
+import { resolveMediaUrlMap } from "@/lib/media";
 import { formatDuration, formatTimecode } from "@/lib/shot-format";
 import { createClient } from "@/lib/supabase/server";
 import { DEPARTMENTS } from "@/lib/validation";
@@ -89,11 +90,14 @@ export default async function VideosPage() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/auth/login?next=/videos");
 
-  const [{ data: rows }, { data: profile }] = await Promise.all([
+  const [{ data: rows, count: totalSegments }, { data: profile }] = await Promise.all([
     supabase
       .from("videos")
       .select(
-        "id, title, status, stage_detail, progress, shot_count, analyzed_shot_count, duration_seconds, source_duration_seconds, segment_start, segment_end, poster_path, width, height, focus, breakdown_status, error_message, created_at"
+        "id, title, status, stage_detail, progress, shot_count, analyzed_shot_count, duration_seconds, source_duration_seconds, segment_start, segment_end, poster_path, width, height, focus, breakdown_status, error_message, created_at",
+        // The list is capped at 60 rows; the header still has to say how many
+        // segments the user actually has rather than how many fitted on it.
+        { count: "exact" }
       )
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
@@ -105,13 +109,15 @@ export default async function VideosPage() {
       .maybeSingle(),
   ]);
 
-  const segments = await Promise.all(
-    ((rows ?? []) as SegmentRow[]).map(async (row) => ({
-      ...row,
-      posterUrl: await resolveMediaUrl(row.poster_path),
-    }))
-  );
+  // One signing round trip for the whole grid, not one per card.
+  const segmentRows = (rows ?? []) as SegmentRow[];
+  const posterUrls = await resolveMediaUrlMap(segmentRows.map((row) => row.poster_path));
+  const segments = segmentRows.map((row) => ({
+    ...row,
+    posterUrl: row.poster_path ? (posterUrls.get(row.poster_path) ?? null) : null,
+  }));
 
+  const total = totalSegments ?? segments.length;
   const plan = (profile?.plan as string | null) ?? "free";
   const shell = {
     authed: true,
@@ -122,20 +128,30 @@ export default async function VideosPage() {
     email: user.email ?? null,
   };
 
+  /*
+   * Only the segments that are actually mid-pipeline. An empty list mounts the
+   * poller as a no-op, so the common case (nothing processing) costs nothing.
+   */
+  const activeIds = segments
+    .filter((segment) => isActiveStatus(segment.status) || segment.breakdown_status === "pending")
+    .map((segment) => segment.id);
+
   return (
     <AppShell
       {...shell}
       topbar={
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-[13px] font-medium text-text-0">Segments</h1>
-          {segments.length > 0 ? (
+          {total > 0 ? (
             <span className="mono text-[11px] text-text-3">
-              {segments.length} {segments.length === 1 ? "segment" : "segments"}
+              {total} {total === 1 ? "segment" : "segments"}
             </span>
           ) : null}
         </div>
       }
     >
+      <SegmentsProgress activeIds={activeIds} />
+
       {segments.length === 0 ? (
         <div className="mx-auto max-w-2xl px-1 py-6 sm:py-10">
           {/*
@@ -194,12 +210,17 @@ export default async function VideosPage() {
               new Date(segment.created_at).toLocaleDateString(),
             ].filter(Boolean);
 
-            const range =
+            // Provenance, not an offset: after ingest every shot timecode is
+            // relative to the segment, so this only says where it was cut from.
+            const cut =
               start !== null && end !== null
-                ? `${formatTimecode(start)}–${formatTimecode(end)}${
-                    sourceDuration !== null ? ` of ${formatDuration(sourceDuration)}` : ""
-                  }`
+                ? `${formatTimecode(start)}–${formatTimecode(end)}`
                 : null;
+            const range = cut
+              ? sourceDuration !== null
+                ? `${cut} of ${formatDuration(sourceDuration)}`
+                : cut
+              : null;
 
             const breakdown = breakdownState(segment.breakdown_status);
 
@@ -239,7 +260,7 @@ export default async function VideosPage() {
                   {range ? (
                     <p
                       className="mono mt-0.5 truncate text-[11px] text-text-3"
-                      title={`Taken from ${range} of the uploaded file`}
+                      title={`Trimmed from ${cut} of the uploaded file`}
                     >
                       {range}
                     </p>
@@ -283,6 +304,12 @@ export default async function VideosPage() {
                   ) : status === "failed" ? (
                     <p className="mt-1.5 truncate text-[11px] text-danger" title={segment.error_message ?? undefined}>
                       {segment.error_message ?? "Analysis failed"}
+                    </p>
+                  ) : status !== "complete" ? (
+                    // Settled but not finished — canceled today. Without this a
+                    // canceled segment reads exactly like a finished one.
+                    <p className="mt-1.5 truncate text-[11px] text-text-3">
+                      {STAGE_LABELS[status]}
                     </p>
                   ) : null}
                 </Link>

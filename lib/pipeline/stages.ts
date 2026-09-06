@@ -747,14 +747,27 @@ export async function runAnalyzeShots(job: ProcessingJob): Promise<Record<string
     .eq("status", "pending");
 
   if ((stillPending ?? 0) > 0) {
+    /*
+     * The continuation needs a dedupe key THIS job is not already holding.
+     *
+     * The dedupe index is unique over ('pending','running'), and this job is
+     * still 'running' under `analyze:<id>` while it enqueues its own successor.
+     * Reusing that key means the insert is rejected as a duplicate, enqueueJob
+     * returns null, and a segment with more shots than fit in one time budget
+     * stops dead with no job to carry it on. Numbering the pass keeps the
+     * guarantee that matters — two workers cannot queue the same continuation —
+     * without colliding with the run that is creating it. Same shape as the
+     * finalize hand-back below.
+     */
+    const pass = Number(job.payload.pass ?? 0) + 1;
     await enqueueJob(
       "analyze_shots",
-      { videoId },
+      { videoId, pass },
       {
         videoId,
         userId: video.user_id,
         priority: limits.jobPriority + 1,
-        dedupeKey: `analyze:${videoId}`,
+        dedupeKey: `analyze:${videoId}:${pass}`,
       }
     );
   } else {
@@ -928,8 +941,8 @@ export async function runFinalizeVideo(job: ProcessingJob): Promise<Record<strin
     );
     await enqueueJob(
       "analyze_shots",
-      { videoId },
-      { videoId, delayMs: 5_000, dedupeKey: `analyze:${videoId}` }
+      { videoId, pass: `handback-${handbacks + 1}` },
+      { videoId, delayMs: 5_000, dedupeKey: `analyze:${videoId}:handback-${handbacks + 1}` }
     );
     return { requeued: pending, handbacks: handbacks + 1 };
   }

@@ -453,4 +453,27 @@ suite("processing job queue", () => {
   it("reports outstanding work so a drain loop knows to wait", async () => {
     expect(typeof (await activeJobCount())).toBe("number");
   });
+
+  /*
+   * A staged job enqueues its own successor while it is still running. If the
+   * successor reuses the running job's dedupe key the unique index rejects it,
+   * enqueueJob returns null, and the pipeline stops with nothing to carry it on
+   * — which is how a segment with more shots than fit in one time budget got
+   * stranded in `analyzing` with no queued work. The stages number each pass so
+   * the key differs; this asserts both halves of that.
+   */
+  it("cannot enqueue a continuation under a running job's own dedupe key", async () => {
+    const key = `test-continuation-${Date.now()}`;
+    const first = await enqueueJob("analyze_shots", {}, { dedupeKey: key });
+    created.push(first!);
+    const [claimed] = await claimJobs(1);
+    expect(claimed?.id).toBeTruthy();
+
+    const collided = await enqueueJob("analyze_shots", { pass: 1 }, { dedupeKey: key });
+    expect(collided).toBeNull();
+
+    const distinct = await enqueueJob("analyze_shots", { pass: 1 }, { dedupeKey: `${key}:1` });
+    expect(distinct).not.toBeNull();
+    created.push(distinct!);
+  });
 });

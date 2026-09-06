@@ -658,3 +658,85 @@ Not for this launch. Sketch so the flags in Phase 1 have a destination.
 | `vfx` | VFX | Plates, tracking, cleanup, comp order, or "none beyond grade and grain" |
 | `sound` | Sound | Room and practicals implied by frame, foley, music energy, or "nothing implied" |
 | `producer` | Producer | Crew count, hours on set, permits and location notes, budget tier, what to cut first |
+
+---
+
+# Build status
+
+**Built:** 2026-09-05, on branch `launch/core`.
+
+Every phase in this plan was executed. What follows is what was actually verified by running
+it, not by reading the code.
+
+## Verified by running
+
+| Check | Result |
+|---|---|
+| `npm test` | 152 unit and integration tests pass |
+| `npx tsc --noEmit` | clean |
+| `npm run lint` | clean |
+| `npm run build` | clean |
+| `scripts/segment-journey.ts` | 32 of 32, over real HTTP with two real signed-in users |
+| `scripts/full-journey.ts` | 24 of 24, real ffmpeg and real Claude, upload through to rendered pages |
+| `scripts/pipeline-smoke.ts` | passes with and without a focus question |
+| `scripts/http-smoke.ts` | passes, with two checks honestly skipped by their flags |
+
+The end-to-end run trims a 15-second source to 4–13 seconds, detects four shots, analyses each
+one, writes a nine-department breakdown that answers the uploader's question citing shots by
+number, renders all nine briefs on the segment page, deletes the original from storage, and
+cleans up completely on delete.
+
+## Defects found and fixed while building
+
+Each of these was found by running the thing, not by reading it.
+
+1. **A staged job could not enqueue its own continuation.** `runAnalyzeShots` re-enqueued
+   itself under `analyze:<videoId>`, the key its own running job still held, so the dedupe
+   index rejected the insert and the segment stalled in `analyzing` with no queued work.
+   Predates this work; only reachable when a segment has more shots than fit in one analysis
+   budget, which every earlier test clip was too short to hit. Continuations now number each
+   pass. Locked in by an integration test.
+2. **Raw pipeline errors leaked to non-owners.** `GET /api/videos/[id]` returned
+   `breakdown_error` verbatim to any signed-in reader of a public segment, and the poller put
+   it back into client state after the page had blanked it. Gated on ownership in the route.
+3. **The public-library flag stopped restoring the feature.** The login wall and the
+   anonymous-safe paths had been hardcoded rather than gated, so turning the flag back on
+   would have left the page behind login and thrown on `user.id`. Restored to a real gate.
+4. **A question asked mid-generation was charged and discarded.** The dedupe index blocks a
+   second active job, so a refocus during a running generation was stored, billed, and never
+   answered. The stage now compares the question it answered against the row's current
+   question and queues a follow-up.
+5. **The overlay's arrow-key navigation was dead** — nothing published the result set.
+6. **The segments list signed up to sixty poster URLs one call at a time** in front of first
+   paint, and never updated a processing segment without a reload.
+7. **The trimmer kept a stale stop point**, so after using "Play selection" the preview could
+   not be played past the out point by any other means.
+8. **A footer column of links into now-404 routes** shipped on every page, the landing page
+   included.
+
+## Known gaps, stated plainly
+
+- **No browser-driven test.** There is no headless browser in the project and no dependency
+  was added for one. The interactive half of the trimmer — pointer dragging, the arrow, Home,
+  End, `i` and `o` keys, "Play selection" stopping at the out point — is verified by types,
+  lint, pure-helper tests and reading, not by driving a real browser. A manual pass with a
+  two-minute MP4, a twenty-second MP4 and a ProRes MOV is the remaining gap.
+- **The landing page shows the shape of a breakdown, not a sample of one.** Writing a
+  convincing fake would have been the single dishonest thing on the page. Supplying one short
+  clip you own turns that section into a real worked example.
+- **A stranded breakdown has no automatic retry.** If `breakdown_status` sticks at `pending`,
+  the owner can regenerate from the segment page, but nothing sweeps for it.
+- **Cost is unmeasured against the real bill.** A segment costs one Claude vision call per
+  shot plus one breakdown call over up to twelve frames. Confirm against the console after the
+  first real week and adjust the plan caps in `lib/plans.ts`.
+
+## Before deploying
+
+1. Set the production environment variables listed in `README.md`. No `FEATURE_*` variable
+   should be set: every one defaults off, which is the launch configuration.
+2. Confirm the `SITE_URL` and `CRON_SECRET` repository secrets exist, so
+   `.github/workflows/worker-ping.yml` can drain the queue every five minutes. The two-minute
+   Vercel cron needs a paid plan; the pinger is the alternative.
+3. Deploy a preview, run `npm run http:smoke <preview-url>`, then upload one real segment with
+   a question and read the breakdown.
+4. Promote, and repeat step 3 once against production.

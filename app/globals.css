@@ -93,6 +93,13 @@ body {
   color: var(--accent-ink);
 }
 
+/*
+ * These are plain classes in @layer utilities, not Tailwind v4 @utility
+ * declarations, so Tailwind generates NO variants for them: `xl:sticky-rail`
+ * and `md:shot-grid` compile to nothing at all, silently. Spell the rules out
+ * when you need one at a breakpoint, or promote the class to @utility first and
+ * re-check specificity across the app.
+ */
 @layer utilities {
   .eyebrow {
     font-size: 10px;

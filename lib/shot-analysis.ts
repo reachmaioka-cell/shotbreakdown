@@ -70,6 +70,8 @@ export type ShotAnalysisInput = {
   preferences?: UserPreferences | null;
   insights?: string | null;
   similarBlock?: string | null;
+  /** What the uploader asked about the segment this shot belongs to. */
+  focus?: string | null;
 };
 
 export async function analyzeShotFrames(input: ShotAnalysisInput): Promise<StoredShotRecord> {
@@ -105,6 +107,7 @@ export async function analyzeShotFrames(input: ShotAnalysisInput): Promise<Store
     failureModes: input.insights ?? undefined,
     knowledgeBlock: formatKnowledgeBlock(knowledge),
     similarBlock: input.similarBlock ?? undefined,
+    focus: input.focus ?? null,
   });
 
   const userText =

@@ -4,7 +4,6 @@ import { notFound } from "next/navigation";
 import { AddToCollection } from "@/components/add-to-collection";
 import { AskPanel } from "@/components/ask-panel";
 import { FramePicker } from "@/components/frame-picker";
-import { RecreationGuidePanel } from "@/components/recreation-guide";
 import { ClipPlayer } from "@/components/clip-player";
 import { JsonLd } from "@/components/json-ld";
 import { MetadataEditor } from "@/components/metadata-editor";
@@ -18,11 +17,11 @@ import { SiteHeader } from "@/components/site-header";
 import { Pill } from "@/components/ui/primitives";
 import { savedShotIds } from "@/lib/collections";
 import { getAppUrl } from "@/lib/env";
+import { FEATURES } from "@/lib/features";
 import { humanize } from "@/lib/filters";
 import { getShare } from "@/lib/shares";
 import { formatDuration, formatTimecode, getShot, getShotFrames } from "@/lib/shots";
 import { createClient } from "@/lib/supabase/server";
-import { hasRecreationGuide } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -166,7 +165,9 @@ export default async function ShotPage({ params }: { params: Params }) {
                     {formatDuration(shot.durationSeconds)}
                   </span>
                 ) : null}
-                {shot.visibility === "public" ? <span>{shot.viewCount} views</span> : null}
+                {FEATURES.publicLibrary && shot.visibility === "public" ? (
+                  <span>{shot.viewCount} views</span>
+                ) : null}
               </div>
             </div>
 
@@ -196,35 +197,19 @@ export default async function ShotPage({ params }: { params: Params }) {
               </section>
             ) : null}
 
-            {metadata ? (
-              <section className="mt-6 border-t border-line pt-5">
-                <h2 className="eyebrow mb-3">Recreate it</h2>
-                <RecreationGuidePanel
-                  shotId={shot.id}
-                  signedIn={user !== null}
-                  initialGuide={
-                    hasRecreationGuide(metadata) && metadata.recreation_steps
-                      ? {
-                          recreation_steps: metadata.recreation_steps,
-                          budget_recreation: {
-                            under_500_usd: metadata.budget_recreation?.under_500_usd ?? [],
-                            under_5000_usd: metadata.budget_recreation?.under_5000_usd ?? [],
-                          },
-                          common_mistakes: metadata.common_mistakes ?? [],
-                        }
-                      : null
-                  }
-                />
-              </section>
-            ) : null}
-
             {shot.tags.length > 0 ? (
               <ul className="mt-6 flex flex-wrap gap-1.5">
                 {shot.tags.map((tag) => (
                   <li key={tag}>
-                    <Link href={`/tags/${encodeURIComponent(tag)}`}>
+                    {/* /tags/[tag] 404s while the flag is off, so the tag reads
+                        as a label rather than a dead link. */}
+                    {FEATURES.tagPages ? (
+                      <Link href={`/tags/${encodeURIComponent(tag)}`}>
+                        <Pill>{humanize(tag)}</Pill>
+                      </Link>
+                    ) : (
                       <Pill>{humanize(tag)}</Pill>
-                    </Link>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -263,12 +248,14 @@ export default async function ShotPage({ params }: { params: Params }) {
               </section>
             ) : null}
 
-            <section className="mt-8 border-t border-line pt-5">
-              <div className="mb-3 flex items-baseline justify-between">
-                <h2 className="eyebrow">Visually similar</h2>
-              </div>
-              <SimilarShots shotId={shot.id} />
-            </section>
+            {FEATURES.similarShots ? (
+              <section className="mt-8 border-t border-line pt-5">
+                <div className="mb-3 flex items-baseline justify-between">
+                  <h2 className="eyebrow">Visually similar</h2>
+                </div>
+                <SimilarShots shotId={shot.id} />
+              </section>
+            ) : null}
           </div>
 
           <aside className="lg:sticky lg:top-16 lg:self-start">

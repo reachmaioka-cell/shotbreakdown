@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ACCEPT_ATTRIBUTE, ALLOWED_UPLOAD_TYPES, UPLOAD_BUCKET } from "@/lib/constants";
+import {
+  ACCEPT_ATTRIBUTE,
+  ACCEPT_VIDEO_ATTRIBUTE,
+  ALLOWED_UPLOAD_TYPES,
+  ALLOWED_VIDEO_TYPES,
+  UPLOAD_BUCKET,
+} from "@/lib/constants";
 import { createClient } from "@/lib/supabase/client";
 import { formatBytes, formatDurationLimit, type PlanLimits } from "@/lib/plans";
 
@@ -14,10 +20,13 @@ function extension(name: string): string {
   return ext && ext.length <= 5 ? ext : "bin";
 }
 
-function isSupported(file: File): boolean {
-  if ((ALLOWED_UPLOAD_TYPES as readonly string[]).includes(file.type)) return true;
+function isSupported(file: File, allowStills: boolean): boolean {
+  const types = allowStills ? ALLOWED_UPLOAD_TYPES : ALLOWED_VIDEO_TYPES;
+  if ((types as readonly string[]).includes(file.type)) return true;
   // Some browsers report an empty type for .mkv/.mov; fall back to the extension.
-  return /\.(mp4|mov|m4v|webm|mkv|jpg|jpeg|png|webp|avif)$/i.test(file.name);
+  return allowStills
+    ? /\.(mp4|mov|m4v|webm|mkv|jpg|jpeg|png|webp|avif)$/i.test(file.name)
+    : /\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name);
 }
 
 /**
@@ -25,15 +34,22 @@ function isSupported(file: File): boolean {
  *
  * The browser only uploads; processing is a durable server job, so closing the
  * tab after the upload completes does not lose the analysis.
+ *
+ * The two flags arrive as props because feature flags are server-only — a
+ * client component reading them would see every one of them as false.
  */
 export function UploadForm({
   limits,
   authed,
   remaining,
+  linkSourcesEnabled,
+  stillUploadsEnabled,
 }: {
   limits: PlanLimits;
   authed: boolean;
   remaining: number;
+  linkSourcesEnabled: boolean;
+  stillUploadsEnabled: boolean;
 }) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
@@ -48,8 +64,12 @@ export function UploadForm({
   useEffect(() => () => xhrRef.current?.abort(), []);
 
   function chooseFile(next: File) {
-    if (!isSupported(next)) {
-      setError("Use MP4, MOV, M4V, WebM, MKV, or a still image.");
+    if (!isSupported(next, stillUploadsEnabled)) {
+      setError(
+        stillUploadsEnabled
+          ? "Use MP4, MOV, M4V, WebM, MKV, or a still image."
+          : "Use MP4, MOV, M4V, WebM or MKV."
+      );
       return;
     }
     if (next.size > limits.maxUploadBytes) {
@@ -110,7 +130,7 @@ export function UploadForm({
         return;
       }
 
-      if (url.trim()) {
+      if (linkSourcesEnabled && url.trim()) {
         setPhase("creating");
         const res = await fetch("/api/videos", {
           method: "POST",
@@ -183,7 +203,8 @@ export function UploadForm({
           <>
             <p className="text-[14px] text-text-0">Drop a video here</p>
             <p className="mt-1 text-[12px] text-text-2">
-              MP4, MOV, M4V, WebM, MKV or a still · up to {formatBytes(limits.maxUploadBytes)} ·{" "}
+              MP4, MOV, M4V, WebM, MKV{stillUploadsEnabled ? " or a still" : ""} · up to{" "}
+              {formatBytes(limits.maxUploadBytes)} ·{" "}
               {formatDurationLimit(limits.maxVideoSeconds)} max
             </p>
             <button
@@ -198,7 +219,7 @@ export function UploadForm({
         <input
           ref={fileInput}
           type="file"
-          accept={ACCEPT_ATTRIBUTE}
+          accept={stillUploadsEnabled ? ACCEPT_ATTRIBUTE : ACCEPT_VIDEO_ATTRIBUTE}
           className="sr-only"
           onChange={(e) => {
             const next = e.target.files?.[0];
@@ -207,7 +228,7 @@ export function UploadForm({
         />
       </div>
 
-      {!file ? (
+      {linkSourcesEnabled && !file ? (
         <div className="flex items-center gap-3">
           <div className="h-px flex-1 bg-line" />
           <span className="eyebrow">or paste a link</span>
@@ -215,7 +236,7 @@ export function UploadForm({
         </div>
       ) : null}
 
-      {!file ? (
+      {linkSourcesEnabled && !file ? (
         <div>
           <label htmlFor="source-url" className="sr-only">
             Video URL
@@ -274,10 +295,10 @@ export function UploadForm({
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="submit"
-          disabled={busy || (!file && !url.trim())}
+          disabled={busy || (!file && !(linkSourcesEnabled && url.trim()))}
           className="inline-flex h-10 items-center rounded-[3px] bg-text-0 px-5 text-[13px] font-medium text-ink-0 hover:bg-white disabled:opacity-40"
         >
-          {busy ? "Working…" : "Analyze"}
+          {busy ? "Working…" : "Break it down"}
         </button>
         {authed ? (
           <p className="text-[12px] text-text-2">

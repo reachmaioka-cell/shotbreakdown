@@ -27,6 +27,12 @@ export const RATE_LIMITS = {
   billing: { limit: 20, windowSeconds: 60 * 60 },
   reanalyze: { limit: 30, windowSeconds: 24 * 60 * 60 },
   recreation_guide: { limit: 20, windowSeconds: 24 * 60 * 60 },
+  /**
+   * Re-asking for a breakdown with a different question. The first breakdown of
+   * a segment is written automatically by the pipeline and does not spend from
+   * this budget: only a deliberate refocus does.
+   */
+  segment_breakdown: { limit: 10, windowSeconds: 24 * 60 * 60 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitBucket = keyof typeof RATE_LIMITS;

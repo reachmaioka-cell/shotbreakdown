@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { FEATURES } from "@/lib/features";
 import { createClient } from "@/lib/supabase/server";
 import { FREE_LIMIT } from "@/lib/constants";
 
@@ -22,7 +23,8 @@ export async function GET() {
     authed: true,
     plan,
     isPro: plan === "pro",
-    isAdmin: !!profile?.is_admin,
+    // Only advertise the console when it is actually reachable.
+    isAdmin: !!profile?.is_admin && FEATURES.adminReview,
     breakdownCount: used,
     breakdownLimit: plan === "pro" ? null : FREE_LIMIT,
     breakdownRemaining: plan === "pro" ? null : Math.max(0, FREE_LIMIT - used),

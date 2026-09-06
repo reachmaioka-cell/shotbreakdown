@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { FEATURES } from "@/lib/features";
 import { jsonError } from "@/lib/http";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -24,6 +25,7 @@ async function requireAdmin() {
 }
 
 export async function POST(request: Request) {
+  if (!FEATURES.adminReview) return jsonError("Not found", 404);
   if (!(await requireAdmin())) return jsonError("Not found", 404);
 
   let raw: unknown;

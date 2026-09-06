@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { SiteHeader } from "@/components/site-header";
+import { FEATURES } from "@/lib/features";
 import { humanize } from "@/lib/filters";
 import { resolveMediaUrl } from "@/lib/media";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -15,6 +16,8 @@ export const dynamic = "force-dynamic";
  * here — it is deliberately not something crowd ratings can trigger.
  */
 export default async function AdminReviewPage() {
+  if (!FEATURES.adminReview) notFound();
+
   const supabase = await createClient();
   const {
     data: { user },

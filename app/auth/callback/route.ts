@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { trackAsync } from "@/lib/analytics";
+import { FEATURES } from "@/lib/features";
 import { safeRedirectPath } from "@/lib/safe-url";
 import { createClient } from "@/lib/supabase/server";
 
@@ -50,9 +51,13 @@ export async function GET(request: Request) {
 
     if (!prefs) {
       trackAsync("signup", { userId: user.id });
-      // First sign-in goes to onboarding, unless the user was heading somewhere
-      // specific — in which case honour that and let them onboard later.
-      if (next === "/") return NextResponse.redirect(`${origin}/onboarding`);
+      // First sign-in lands in the app rather than the marketing page, unless the
+      // user was heading somewhere specific — in which case honour that. The
+      // onboarding interstitial is flagged off and 404s, so with the flag down we
+      // send people straight to their library; turning FEATURE_ONBOARDING back on
+      // restores the interstitial rather than leaving it unreachable.
+      const first = FEATURES.onboarding ? "/onboarding" : "/library";
+      if (next === "/") return NextResponse.redirect(`${origin}${first}`);
     }
   }
 

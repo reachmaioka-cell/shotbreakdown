@@ -1,6 +1,7 @@
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { trackAsync } from "@/lib/analytics";
+import { FEATURES } from "@/lib/features";
 import { jsonError } from "@/lib/http";
 import { enqueueJob } from "@/lib/pipeline/queue";
 import { planLimits } from "@/lib/plans";
@@ -45,6 +46,18 @@ export async function POST(request: Request) {
 
   const parsed = Body.safeParse(raw);
   if (!parsed.success) return jsonError("Invalid input", 400);
+
+  // Both of these read one frame and call it a shot, which cannot answer "what
+  // happens in this segment". The code below still works; the flags turn the
+  // entry points off. Checked after the parse so a malformed body still reads
+  // as malformed rather than as a disabled feature.
+  if ("url" in parsed.data) {
+    if (!FEATURES.linkSources) {
+      return jsonError("Paste-a-link is not available. Upload a video file instead.", 400);
+    }
+  } else if (!FEATURES.stillUploads && parsed.data.sourceType === "frame_upload") {
+    return jsonError("Still images are not supported. Upload a video segment instead.", 400);
+  }
 
   const { data: profile } = await supabase
     .from("profiles")

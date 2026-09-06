@@ -6,13 +6,20 @@
 export type PlanId = "free" | "pro";
 
 export type PlanLimits = {
-  /** Videos a user may submit for analysis per rolling month. */
+  /** Segments a user may submit for analysis per rolling month. */
   videosPerMonth: number;
-  /** Longest single video, in seconds. */
+  /**
+   * Longest single segment, in seconds.
+   *
+   * This is a product boundary, not a cost ceiling. A breakdown has to be
+   * specific about what happens and how each shot is cut; over a few minutes
+   * that stops being one answer and becomes a summary of many. The uploader
+   * trims to the part they care about before anything is analysed.
+   */
   maxVideoSeconds: number;
-  /** Largest upload, in bytes. */
+  /** Largest upload, in bytes. Measured on the file, before trimming. */
   maxUploadBytes: number;
-  /** Most shots analysed from one video. */
+  /** Most shots analysed from one segment. */
   maxShotsPerVideo: number;
   /** Saved shots ceiling. */
   maxSavedShots: number;
@@ -29,9 +36,9 @@ export type PlanLimits = {
 export const PLANS: Record<PlanId, PlanLimits> = {
   free: {
     videosPerMonth: 3,
-    maxVideoSeconds: 5 * 60,
+    maxVideoSeconds: 60,
     maxUploadBytes: 300 * 1024 * 1024,
-    maxShotsPerVideo: 40,
+    maxShotsPerVideo: 12,
     maxSavedShots: 100,
     maxCollections: 5,
     semanticSearch: true,
@@ -40,9 +47,9 @@ export const PLANS: Record<PlanId, PlanLimits> = {
   },
   pro: {
     videosPerMonth: 100,
-    maxVideoSeconds: 30 * 60,
+    maxVideoSeconds: 180,
     maxUploadBytes: 2 * 1024 * 1024 * 1024,
-    maxShotsPerVideo: 120,
+    maxShotsPerVideo: 30,
     maxSavedShots: 100_000,
     maxCollections: 500,
     semanticSearch: true,
@@ -60,7 +67,27 @@ export function formatBytes(bytes: number): string {
   return `${Math.round(bytes / 1024 ** 2)}MB`;
 }
 
+/**
+ * Segment caps are a minute or three, so "1 minute" reads as a rounding of
+ * something longer. Below two minutes we say the seconds.
+ */
 export function formatDurationLimit(seconds: number): string {
+  if (seconds < 120) return `${Math.round(seconds)} seconds`;
   const minutes = Math.round(seconds / 60);
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
+
+/**
+ * How far past the plan cap a segment may land before the pipeline rejects it.
+ *
+ * Container timestamps, keyframe placement and the browser's duration estimate
+ * disagree by fractions of a second, so an exact comparison would fail a
+ * segment the user trimmed correctly.
+ */
+export const SEGMENT_LENGTH_TOLERANCE_SECONDS = 0.5;
+
+/**
+ * Below this, a trim is not worth a re-encode: the range covers the file.
+ * Also the threshold for recording the range as provenance at all.
+ */
+export const SEGMENT_TRIM_EPSILON_SECONDS = 0.05;

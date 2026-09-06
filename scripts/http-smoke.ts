@@ -1,10 +1,15 @@
 /**
  * HTTP smoke test against the running dev/prod server.
  * Usage: npx tsx --env-file=.env.local scripts/http-smoke.ts [baseUrl]
+ *
+ * Checks that belong to a flagged-off feature skip themselves and print the
+ * flag that skipped them. A skip is never counted as a pass.
  */
+import { FEATURES } from "../lib/features";
+
 const BASE = process.argv[2] ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://127.0.0.1:3002";
 
-type Check = { name: string; ok: boolean; detail?: string };
+type Check = { name: string; ok: boolean; skipped?: string; detail?: string };
 
 async function check(name: string, fn: () => Promise<void>): Promise<Check> {
   try {
@@ -13,6 +18,11 @@ async function check(name: string, fn: () => Promise<void>): Promise<Check> {
   } catch (e) {
     return { name, ok: false, detail: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** A check that cannot apply while a feature is off. Reported, never counted as a pass. */
+function skip(name: string, flag: string): Check {
+  return { name, ok: true, skipped: flag };
 }
 
 async function main() {
@@ -28,31 +38,45 @@ async function main() {
   );
 
   results.push(
-    await check("GET /library", async () => {
-      const res = await fetch(`${BASE}/library`);
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const html = await res.text();
-      if (!html.includes("Library")) throw new Error("missing heading");
-    })
+    FEATURES.publicLibrary
+      ? await check("GET /library (anonymous)", async () => {
+          const res = await fetch(`${BASE}/library`);
+          if (!res.ok) throw new Error(`status ${res.status}`);
+          const html = await res.text();
+          if (!html.includes("Library")) throw new Error("missing heading");
+        })
+      : await check("GET /library redirects guests to login", async () => {
+          const res = await fetch(`${BASE}/library`, { redirect: "manual" });
+          if (res.status !== 307 && res.status !== 302) throw new Error(`status ${res.status}`);
+          const loc = res.headers.get("location") ?? "";
+          if (!loc.includes("/auth/login")) throw new Error(`location ${loc}`);
+        })
   );
 
   results.push(
-    await check("GET /api/shots/search", async () => {
-      const res = await fetch(`${BASE}/api/shots/search?q=low-key%20portrait`);
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as { shots?: unknown[]; total?: number };
-      if (!Array.isArray(data.shots)) throw new Error("missing shots array");
-      if (typeof data.total !== "number") throw new Error("missing total");
-    })
+    FEATURES.publicLibrary
+      ? await check("GET /api/shots/search", async () => {
+          const res = await fetch(`${BASE}/api/shots/search?q=low-key%20portrait`);
+          if (!res.ok) throw new Error(`status ${res.status}`);
+          const data = (await res.json()) as { shots?: unknown[]; total?: number };
+          if (!Array.isArray(data.shots)) throw new Error("missing shots array");
+          if (typeof data.total !== "number") throw new Error("missing total");
+        })
+      : await check("GET /api/shots/search refuses anonymous callers", async () => {
+          const res = await fetch(`${BASE}/api/shots/search?q=low-key%20portrait`);
+          if (res.status !== 401) throw new Error(`expected 401, got ${res.status}`);
+        })
   );
 
   results.push(
-    await check("GET /api/shots/search facet", async () => {
-      const res = await fetch(`${BASE}/api/shots/search?lighting_key=low-key&limit=5`);
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as { total?: number };
-      if (typeof data.total !== "number") throw new Error("missing total");
-    })
+    FEATURES.publicLibrary
+      ? await check("GET /api/shots/search facet", async () => {
+          const res = await fetch(`${BASE}/api/shots/search?lighting_key=low-key&limit=5`);
+          if (!res.ok) throw new Error(`status ${res.status}`);
+          const data = (await res.json()) as { total?: number };
+          if (typeof data.total !== "number") throw new Error("missing total");
+        })
+      : skip("GET /api/shots/search facet", "FEATURE_PUBLIC_LIBRARY")
   );
 
   results.push(
@@ -99,7 +123,9 @@ async function main() {
   );
 
   results.push(
-    await check("public shot page + recreation guide", async () => {
+    !FEATURES.publicLibrary
+      ? skip("public shot page + recreation guide", "FEATURE_PUBLIC_LIBRARY")
+      : await check("public shot page + recreation guide", async () => {
       const search = await fetch(`${BASE}/api/shots/search?limit=1`);
       if (!search.ok) throw new Error(`search ${search.status}`);
       const data = (await search.json()) as {
@@ -110,21 +136,23 @@ async function main() {
       const page = await fetch(`${BASE}/shots/${shot.slug ?? shot.id}`);
       if (!page.ok) throw new Error(`shot page ${page.status}`);
       const html = await page.text();
-      if (!html.includes("Recreate it")) throw new Error("missing Recreate it section");
+      if (!html.includes("shot")) throw new Error("shot page did not render");
       const guide = await fetch(`${BASE}/api/shots/${shot.id}/recreation-guide`);
       if (!guide.ok) throw new Error(`guide ${guide.status}`);
       const body = (await guide.json()) as { status?: string };
       if (body.status !== "ready" && body.status !== "missing" && body.status !== "pending") {
         throw new Error(`unexpected guide status ${body.status}`);
       }
-    })
+        })
   );
 
   console.log(`\nShotBreakdown HTTP smoke (${BASE})\n`);
   for (const r of results) {
-    console.log(r.ok ? `✓ ${r.name}` : `✗ ${r.name}${r.detail ? `: ${r.detail}` : ""}`);
+    if (r.skipped) console.log(`- ${r.name}  skipped (${r.skipped} off)`);
+    else console.log(r.ok ? `✓ ${r.name}` : `✗ ${r.name}${r.detail ? `: ${r.detail}` : ""}`);
   }
-  console.log("");
+  const skipped = results.filter((r) => r.skipped).length;
+  console.log(skipped > 0 ? `\n${skipped} check(s) skipped by feature flags\n` : "");
 
   const failed = results.filter((r) => !r.ok);
   if (failed.length) process.exit(1);

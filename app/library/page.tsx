@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { ActiveFilters } from "@/components/active-filters";
 import { FilterRail } from "@/components/filter-rail";
 import { SearchBar } from "@/components/search-bar";
@@ -10,8 +11,14 @@ import { SiteHeader } from "@/components/site-header";
 import { GridSkeleton, LinkButton, ErrorState } from "@/components/ui/primitives";
 import { savedShotIds } from "@/lib/collections";
 import { getAppUrl } from "@/lib/env";
+import { FEATURES } from "@/lib/features";
 import { FILTER_KEYS, humanize } from "@/lib/filters";
-import { searchShots, shotFacetCounts, type ShotSearchFilters } from "@/lib/shots";
+import {
+  searchShots,
+  shotFacetCounts,
+  type ShotScope,
+  type ShotSearchFilters,
+} from "@/lib/shots";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -32,6 +39,18 @@ export async function generateMetadata({
 }: {
   searchParams: SearchParams;
 }): Promise<Metadata> {
+  if (!FEATURES.publicLibrary) {
+    // A library of one person's own shots is behind login and worth nothing to
+    // a crawler, so it describes itself plainly and asks to be left alone.
+    return {
+      title: "Shots",
+      description:
+        "Every segment you have analyzed, searchable by look, lighting, lens, movement and mood.",
+      alternates: { canonical: `${getAppUrl()}/library` },
+      robots: { index: false, follow: false },
+    };
+  }
+
   const raw = await searchParams;
   const params = toParams(raw);
   const query = params.get("q");
@@ -60,10 +79,29 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  /*
+   * With no public corpus there is nothing here for a signed-out visitor: every
+   * scope resolves to their own shots, and they have none. Gated on the flag
+   * rather than hardcoded, so turning the public library back on restores
+   * anonymous browsing instead of leaving the page behind a login wall.
+   */
+  if (!FEATURES.publicLibrary && !user) redirect("/auth/login?next=/library");
 
   const scopeParam = params.get("scope");
-  const scope =
-    scopeParam === "mine" || scopeParam === "saved" ? (user ? scopeParam : "public") : "public";
+  /*
+   * "public" is the whole-corpus scope. With the public library off there is no
+   * corpus to browse, so it collapses to the viewer's own shots — which is also
+   * where an unparameterised /library now lands.
+   */
+  const scope: ShotScope = FEATURES.publicLibrary
+    ? scopeParam === "mine" || scopeParam === "saved"
+      ? user
+        ? scopeParam
+        : "public"
+      : "public"
+    : scopeParam === "saved"
+      ? "saved"
+      : "mine";
 
   const filters: ShotSearchFilters = {};
   for (const key of FILTER_KEYS) {
@@ -104,11 +142,30 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
   queryParams.delete("offset");
   const queryString = queryParams.toString() ? `?${queryParams.toString()}` : "";
 
-  const tabs = [
-    { key: "public", label: "All shots", href: "/library" },
-    { key: "saved", label: "Saved", href: "/library?scope=saved" },
-    { key: "mine", label: "My shots", href: "/library?scope=mine" },
-  ];
+  /*
+   * A search that returns nothing is not the same as owning nothing. Only the
+   * unnarrowed view can honestly say "you haven't analyzed anything yet"; with
+   * a query or a filter applied the answer is "no shots match".
+   */
+  const narrowed = Boolean(query) || Object.keys(filters).length > 0;
+
+  /*
+   * Saved and My shots are personal scopes; a signed-out visitor (only possible
+   * with the public library on) gets no tabs at all rather than tabs that lead
+   * to an empty page.
+   */
+  const tabs = !user
+    ? []
+    : FEATURES.publicLibrary
+      ? [
+          { key: "public", label: "All shots", href: "/library" },
+          { key: "saved", label: "Saved", href: "/library?scope=saved" },
+          { key: "mine", label: "My shots", href: "/library?scope=mine" },
+        ]
+      : [
+          { key: "mine", label: "My shots", href: "/library" },
+          { key: "saved", label: "Saved", href: "/library?scope=saved" },
+        ];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -122,22 +179,20 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
                 <SearchBar />
               </Suspense>
             </div>
-            {user ? (
-              <nav aria-label="Library scope" className="flex items-center gap-1 shrink-0">
-                {tabs.map((tab) => (
-                  <Link
-                    key={tab.key}
-                    href={tab.href}
-                    className={`rounded-[3px] px-2.5 py-1.5 text-[12px] transition-colors ${
-                      scope === tab.key
-                        ? "bg-ink-2 text-text-0"
-                        : "text-text-2 hover:text-text-0"
-                    }`}
-                  >
-                    {tab.label}
-                  </Link>
-                ))}
-              </nav>
+            {tabs.length > 0 ? (
+            <nav aria-label="Library scope" className="flex items-center gap-1 shrink-0">
+              {tabs.map((tab) => (
+                <Link
+                  key={tab.key}
+                  href={tab.href}
+                  className={`rounded-[3px] px-2.5 py-1.5 text-[12px] transition-colors ${
+                    scope === tab.key ? "bg-ink-2 text-text-0" : "text-text-2 hover:text-text-0"
+                  }`}
+                >
+                  {tab.label}
+                </Link>
+              ))}
+            </nav>
             ) : null}
           </div>
         </div>
@@ -186,21 +241,21 @@ export default async function LibraryPage({ searchParams }: { searchParams: Sear
                   emptyTitle={
                     scope === "saved"
                       ? "Nothing saved yet"
-                      : scope === "mine"
-                        ? "You haven't analyzed a video yet"
+                      : scope === "mine" && !narrowed
+                        ? "You haven't analyzed anything yet"
                         : "No shots match"
                   }
                   emptyBody={
-                    scope === "public"
-                      ? "Clear a filter or search for something looser."
-                      : scope === "saved"
-                        ? "Save a shot from the library and it will appear here."
-                        : "Upload a video and ShotBreakdown will detect and analyze every shot in it."
+                    scope === "saved"
+                      ? "Save a shot from the library and it will appear here."
+                      : scope === "mine" && !narrowed
+                        ? "Upload a segment — a scene, a take, a few seconds — and ShotBreakdown breaks down every department in it."
+                        : "Clear a filter or search for something looser."
                   }
                   emptyAction={
-                    scope === "mine" ? (
+                    scope === "mine" && !narrowed ? (
                       <LinkButton href="/upload" variant="primary">
-                        Analyze a video
+                        Upload a segment
                       </LinkButton>
                     ) : scope === "saved" ? (
                       <LinkButton href="/library">Browse the library</LinkButton>

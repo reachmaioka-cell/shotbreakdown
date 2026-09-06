@@ -5,7 +5,8 @@ export type ProcessingJobType =
   | "analyze_shots"
   | "finalize_video"
   | "reanalyze_shot"
-  | "generate_recreation_guide";
+  | "generate_recreation_guide"
+  | "generate_segment_breakdown";
 
 export type ProcessingJob = {
   id: string;

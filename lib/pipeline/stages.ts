@@ -7,16 +7,31 @@ import { Readable } from "node:stream";
 
 import { SIGNED_URL_TTL_SEC, UPLOAD_BUCKET } from "@/lib/constants";
 import { embed, shotEmbeddingText } from "@/lib/embeddings";
-import { planLimits } from "@/lib/plans";
+import {
+  planLimits,
+  SEGMENT_LENGTH_TOLERANCE_SECONDS,
+  SEGMENT_TRIM_EPSILON_SECONDS,
+} from "@/lib/plans";
 import { enqueueJob, heartbeat, type ProcessingJob } from "@/lib/pipeline/queue";
 import { analyzeShotFrames, SHOT_PROMPT_VERSION } from "@/lib/shot-analysis";
 import { generateRecreationGuide } from "@/lib/recreation-guide";
+import {
+  generateSegmentBreakdown,
+  selectFrameIndices,
+  SEGMENT_PROMPT_VERSION,
+  type SegmentShotInput,
+} from "@/lib/segment-breakdown";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { detectShots, extractShotFrames, SHOT_DETECTION } from "@/lib/video/shots";
-import { runFfmpeg } from "@/lib/video/ffmpeg";
+import { probeVideo, runFfmpeg, trimVideo } from "@/lib/video/ffmpeg";
 import { instagramOembed, tiktokOembed, youtubeThumbnailAndTitle } from "@/lib/source";
 import { fetchAnalysisImage } from "@/lib/media";
-import { ShotMetadataSchema, type StoredShotRecord } from "@/lib/validation";
+import {
+  SEGMENT_BREAKDOWN_VERSION,
+  ShotMetadataSchema,
+  type StoredSegmentBreakdown,
+  type StoredShotRecord,
+} from "@/lib/validation";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -96,6 +111,125 @@ async function uploadJpeg(admin: Admin, path: string, body: Buffer): Promise<voi
   if (error) throw new PipelineError(`Could not store frame: ${error.message}`, "storage_write_failed");
 }
 
+/** Where a trimmed segment lives. Stable, so a re-run overwrites rather than piles up. */
+function segmentStoragePath(userId: string | null, videoId: string): string {
+  return `${userId ?? "editorial"}/videos/${videoId}/segment.mp4`;
+}
+
+/**
+ * Cut the user's chosen range out of the file they uploaded, and make that cut
+ * the thing the rest of the pipeline sees.
+ *
+ * The product analyses a SEGMENT, never a whole video. Doing the cut here
+ * rather than in the browser means the range is enforced server-side, the
+ * original never has to be kept, and every downstream timecode is relative to
+ * the segment with no offset arithmetic anywhere else.
+ *
+ * Idempotent. A resumed ingest finds file_path already pointing at the trimmed
+ * object and re-uses it, so a long video is not re-encoded once per continuation.
+ */
+async function materializeSegment(
+  admin: Admin,
+  args: {
+    videoId: string;
+    userId: string | null;
+    storedPath: string;
+    localPath: string;
+    dir: string;
+    segmentStart: number | null;
+    segmentEnd: number | null;
+    maxSeconds: number;
+  }
+): Promise<{ localPath: string; storedPath: string; trimmed: boolean }> {
+  const targetPath = segmentStoragePath(args.userId, args.videoId);
+
+  // A previous run already cut this segment; what we downloaded IS the segment.
+  if (args.storedPath === targetPath) {
+    return { localPath: args.localPath, storedPath: args.storedPath, trimmed: true };
+  }
+
+  const probe = await probeVideo(args.localPath);
+  const sourceDuration = probe.durationSeconds;
+
+  await setVideoStatus(admin, args.videoId, { source_duration_seconds: sourceDuration });
+
+  const start = Math.max(0, args.segmentStart ?? 0);
+  const end = Math.min(
+    sourceDuration,
+    args.segmentEnd !== null && args.segmentEnd > start ? args.segmentEnd : sourceDuration
+  );
+  const length = end - start;
+
+  if (!(length > 0)) {
+    throw new PipelineError(
+      "That segment is empty. Pick a range with some footage in it.",
+      "empty_segment",
+      false
+    );
+  }
+
+  if (length > args.maxSeconds + SEGMENT_LENGTH_TOLERANCE_SECONDS) {
+    throw new PipelineError(
+      `That segment is ${formatSeconds(length)}. Your plan allows ${formatSeconds(args.maxSeconds)}. Trim it and try again.`,
+      "too_long",
+      false
+    );
+  }
+
+  const coversWholeFile =
+    start <= SEGMENT_TRIM_EPSILON_SECONDS &&
+    end >= sourceDuration - SEGMENT_TRIM_EPSILON_SECONDS;
+
+  if (coversWholeFile) {
+    return { localPath: args.localPath, storedPath: args.storedPath, trimmed: false };
+  }
+
+  await setVideoStatus(admin, args.videoId, {
+    stage_detail: `Cutting ${formatSeconds(length)} from your upload`,
+    progress: 8,
+  });
+
+  const trimmedPath = join(args.dir, "segment.mp4");
+  await trimVideo(args.localPath, trimmedPath, start, end);
+
+  const { readFile } = await import("node:fs/promises");
+  const body = await readFile(trimmedPath);
+  const { error: uploadError } = await admin.storage
+    .from(UPLOAD_BUCKET)
+    .upload(targetPath, body, { contentType: "video/mp4", upsert: true });
+  if (uploadError) {
+    throw new PipelineError(
+      `Could not store the trimmed segment: ${uploadError.message}`,
+      "storage_write_failed"
+    );
+  }
+
+  // Point the row at the segment only once the object is really there. If this
+  // update fails the job retries and re-uploads over the same key.
+  await setVideoStatus(admin, args.videoId, { file_path: targetPath });
+
+  // The original is not part of the product and the user did not ask us to keep
+  // it. Best-effort: a leftover object is waste, not a broken analysis, and the
+  // account-deletion path sweeps the user's folder anyway.
+  const { error: removeError } = await admin.storage
+    .from(UPLOAD_BUCKET)
+    .remove([args.storedPath]);
+  if (removeError) {
+    console.error("segment original cleanup", args.storedPath, removeError.message);
+  }
+
+  return { localPath: trimmedPath, storedPath: targetPath, trimmed: true };
+}
+
+/** "45 seconds" / "2m 30s" — for messages a user reads. */
+function formatSeconds(seconds: number): string {
+  const whole = Math.round(seconds);
+  if (whole < 120) return `${whole} second${whole === 1 ? "" : "s"}`;
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
 /* ------------------------------------------------------------------ *
  * Stage 1 — ingest: probe, detect shots, extract and store frames.
  *
@@ -111,7 +245,9 @@ export async function runIngestVideo(job: ProcessingJob): Promise<Record<string,
 
   const { data: video, error } = await admin
     .from("videos")
-    .select("id, user_id, source_type, source_url, file_path, title, status, duration_seconds")
+    .select(
+      "id, user_id, source_type, source_url, file_path, title, status, duration_seconds, segment_start, segment_end, focus"
+    )
     .eq("id", videoId)
     .maybeSingle();
 
@@ -145,17 +281,24 @@ export async function runIngestVideo(job: ProcessingJob): Promise<Record<string,
     });
 
     const url = await signedUrl(admin, video.file_path, 3600);
-    const localPath = await downloadToTemp(url, dir, limits.maxUploadBytes);
+    const downloadedPath = await downloadToTemp(url, dir, limits.maxUploadBytes);
+
+    // Cut the segment out before anything else looks at the footage, so every
+    // timecode from here on — shot boundaries, the breakdown's cut notes, the
+    // player — is relative to what the user actually chose.
+    const segment = await materializeSegment(admin, {
+      videoId,
+      userId: video.user_id as string | null,
+      storedPath: video.file_path as string,
+      localPath: downloadedPath,
+      dir,
+      segmentStart: video.segment_start !== null ? Number(video.segment_start) : null,
+      segmentEnd: video.segment_end !== null ? Number(video.segment_end) : null,
+      maxSeconds: limits.maxVideoSeconds,
+    });
+    const localPath = segment.localPath;
 
     const detection = await detectShots(localPath, { maxShots: limits.maxShotsPerVideo });
-
-    if (detection.probe.durationSeconds > limits.maxVideoSeconds) {
-      throw new PipelineError(
-        `This video is ${Math.round(detection.probe.durationSeconds / 60)} minutes. Your plan allows ${Math.round(limits.maxVideoSeconds / 60)}.`,
-        "too_long",
-        false
-      );
-    }
 
     await setVideoStatus(admin, videoId, {
       status: "extracting_frames",
@@ -505,7 +648,7 @@ export async function runAnalyzeShots(job: ProcessingJob): Promise<Record<string
 
   const { data: video } = await admin
     .from("videos")
-    .select("id, user_id, title, source_type, shot_count")
+    .select("id, user_id, title, source_type, shot_count, focus")
     .eq("id", videoId)
     .maybeSingle();
   if (!video) throw new PipelineError("Video not found", "not_found", false);
@@ -572,6 +715,7 @@ export async function runAnalyzeShots(job: ProcessingJob): Promise<Record<string
         preferences: preferences ?? null,
         insights: (insight?.summary as string | null) ?? null,
         similarBlock,
+        focus: (video.focus as string | null) ?? null,
       });
       analyzed += 1;
     } catch (e) {
@@ -647,6 +791,7 @@ export async function analyzeOneShot(
     preferences: Record<string, unknown> | null;
     insights: string | null;
     similarBlock?: string | null;
+    focus?: string | null;
   }
 ): Promise<StoredShotRecord> {
   const { data: frames } = await admin
@@ -687,6 +832,7 @@ export async function analyzeOneShot(
     preferences: args.preferences as never,
     insights: args.insights,
     similarBlock: args.similarBlock ?? null,
+    focus: args.focus ?? null,
   });
 
   const embedding = await embed(
@@ -754,6 +900,13 @@ export async function runFinalizeVideo(job: ProcessingJob): Promise<Record<strin
 
   await releaseStaleAnalyzing(admin, videoId);
 
+  const { data: ownerRow } = await admin
+    .from("videos")
+    .select("user_id")
+    .eq("id", videoId)
+    .maybeSingle();
+  const userIdForVideo = (ownerRow?.user_id as string | null) ?? null;
+
   const { data: counts } = await admin
     .from("shots")
     .select("status")
@@ -815,6 +968,29 @@ export async function runFinalizeVideo(job: ProcessingJob): Promise<Record<strin
     if (poster?.thumbnail_path) {
       await admin.from("videos").update({ poster_path: poster.thumbnail_path }).eq("id", videoId);
     }
+
+    // The breakdown IS the product, so it is not something the user has to ask
+    // for. Segments are capped by plan, so this is a bounded, known cost per
+    // upload rather than an open-ended one.
+    await setVideoStatus(admin, videoId, {
+      breakdown_status: "pending",
+      breakdown_error: null,
+    });
+    await enqueueJob(
+      "generate_segment_breakdown",
+      { videoId },
+      {
+        videoId,
+        userId: userIdForVideo,
+        dedupeKey: `segment-breakdown:${videoId}`,
+        priority: 3,
+      }
+    ).catch((e) => {
+      // A queue failure here must not undo a finished analysis. The breakdown
+      // stays 'pending' and the daily sweep or a manual retry picks it up.
+      console.error("enqueue segment breakdown", videoId, e instanceof Error ? e.message : e);
+      return null;
+    });
   }
 
   return { complete, failed: failedShots };
@@ -980,6 +1156,139 @@ export async function runGenerateRecreationGuide(job: ProcessingJob): Promise<Re
   if (error) throw new PipelineError(`Could not save guide: ${error.message}`, "db_write_failed");
 
   return { shotId };
+}
+
+/**
+ * Write the breakdown for one segment.
+ *
+ * Runs after finalize, so every shot already has its facet record. This pass
+ * reads across them — what happens, how the cuts land, what each department
+ * does — which is the thing no per-shot analysis can produce.
+ */
+export async function runGenerateSegmentBreakdown(
+  job: ProcessingJob
+): Promise<Record<string, unknown>> {
+  const admin = createAdminClient();
+  const videoId = job.video_id ?? (job.payload.videoId as string | undefined);
+  if (!videoId) throw new PipelineError("Job has no video", "bad_job", false);
+
+  const { data: video } = await admin
+    .from("videos")
+    .select("id, user_id, title, focus, duration_seconds")
+    .eq("id", videoId)
+    .maybeSingle();
+  if (!video) throw new PipelineError("Segment not found", "not_found", false);
+
+  const { data: shotRows } = await admin
+    .from("shots")
+    .select("id, shot_index, start_seconds, end_seconds, metadata")
+    .eq("video_id", videoId)
+    .eq("status", "complete")
+    .order("shot_index");
+
+  const shots = shotRows ?? [];
+  if (shots.length === 0) {
+    throw new PipelineError(
+      "This segment has no analysed shots to break down",
+      "no_shots",
+      false
+    );
+  }
+
+  // One representative frame per selected shot. The frames carry continuity and
+  // eyelines; the records carry the measurable facets for every shot regardless.
+  const frameIndices = new Set(selectFrameIndices(shots.length));
+  const wanted = shots.filter((_, i) => frameIndices.has(i)).map((s) => s.id as string);
+
+  const framesByShot = new Map<string, string>();
+  if (wanted.length > 0) {
+    const { data: frames } = await admin
+      .from("shot_frames")
+      .select("shot_id, storage_path, is_representative, timestamp_seconds")
+      .in("shot_id", wanted)
+      .order("timestamp_seconds");
+    for (const frame of frames ?? []) {
+      const shotId = frame.shot_id as string;
+      // Prefer the representative frame; otherwise the first one we saw.
+      if (frame.is_representative || !framesByShot.has(shotId)) {
+        framesByShot.set(shotId, frame.storage_path as string);
+      }
+    }
+  }
+
+  const inputs: SegmentShotInput[] = await Promise.all(
+    shots.map(async (shot, i) => {
+      const parsed = ShotMetadataSchema.safeParse(shot.metadata ?? {});
+      let image: { buffer: Buffer; contentType: string } | null = null;
+      const path = frameIndices.has(i) ? framesByShot.get(shot.id as string) : undefined;
+      if (path) {
+        try {
+          image = await fetchAnalysisImage(await signedUrl(admin, path));
+        } catch (e) {
+          // A missing frame degrades the prompt; it must not fail the segment.
+          console.error("breakdown frame", shot.id, e instanceof Error ? e.message : e);
+        }
+      }
+      return {
+        shotIndex: shot.shot_index as number,
+        startSeconds: Number(shot.start_seconds),
+        endSeconds: Number(shot.end_seconds),
+        metadata: parsed.success ? parsed.data : null,
+        image,
+      };
+    })
+  );
+
+  const [{ data: preferences }, { data: insight }] = await Promise.all([
+    video.user_id
+      ? admin.from("user_preferences").select("*").eq("user_id", video.user_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    admin
+      .from("prompt_insights")
+      .select("summary")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  const focus = ((video.focus as string | null) ?? "").trim() || null;
+  const segmentSeconds =
+    video.duration_seconds !== null
+      ? Number(video.duration_seconds)
+      : Math.max(...inputs.map((s) => s.endSeconds), 0);
+
+  const breakdown = await generateSegmentBreakdown({
+    shots: inputs,
+    focus,
+    videoTitle: (video.title as string | null) ?? null,
+    segmentSeconds,
+    preferences: (preferences as never) ?? null,
+    insights: (insight?.summary as string | null) ?? null,
+  });
+
+  const stored: StoredSegmentBreakdown = {
+    ...breakdown,
+    version: SEGMENT_BREAKDOWN_VERSION,
+    prompt_version: SEGMENT_PROMPT_VERSION,
+    focus,
+    generated_at: new Date().toISOString(),
+  };
+
+  const { error } = await admin
+    .from("videos")
+    .update({
+      breakdown: stored,
+      breakdown_status: "ready",
+      breakdown_error: null,
+      breakdown_prompt_version: SEGMENT_PROMPT_VERSION,
+      breakdown_generated_at: stored.generated_at,
+    })
+    .eq("id", videoId);
+  if (error) {
+    throw new PipelineError(`Could not save the breakdown: ${error.message}`, "db_write_failed");
+  }
+
+  return { videoId, shots: inputs.length, framed: inputs.filter((s) => s.image).length };
 }
 
 export const PIPELINE_LIMITS = { SHOT_DETECTION, FRAME_WIDTH, THUMB_WIDTH, CANDIDATES_PER_SHOT };

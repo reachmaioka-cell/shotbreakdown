@@ -649,3 +649,206 @@ export function normalizeShotRecord(raw: ShotRecord): StoredShotRecord {
     },
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Segment breakdown — the product.
+ *
+ * A user uploads a SEGMENT of a video and gets one document back. Not a pile
+ * of per-shot cards: one read of the whole segment that says what happens in
+ * it, walks every shot and every cut, answers whatever the uploader asked, and
+ * then says what each department has to do to make it.
+ *
+ * This lives on `videos.breakdown`, deliberately NOT on `shots.metadata`.
+ * lib/overlay.ts derives the user-correctable field allowlist from
+ * ShotMetadataSchema, so anything added there becomes editable through the
+ * corrections endpoint. A generated document is not a facet to be corrected.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Every role that has to do something to put a shot on screen.
+ *
+ * The order is the order the work happens in on a real production, and it is
+ * the order the UI renders. All nine are always present in a breakdown: a
+ * department with nothing to do says so in one line, which is itself useful
+ * ("no VFX, this is entirely practical").
+ */
+export const DEPARTMENTS = [
+  "director",
+  "camera",
+  "lighting_grip",
+  "art_department",
+  "editorial",
+  "color",
+  "vfx",
+  "sound",
+  "producer",
+] as const;
+
+export type Department = (typeof DEPARTMENTS)[number];
+
+export const DEPARTMENT_LABELS: Record<Department, string> = {
+  director: "Director",
+  camera: "Camera",
+  lighting_grip: "Lighting and grip",
+  art_department: "Art department",
+  editorial: "Editorial",
+  color: "Colour",
+  vfx: "VFX",
+  sound: "Sound",
+  producer: "Producer",
+};
+
+export const DIFFICULTIES = ["easy", "moderate", "hard", "specialist"] as const;
+
+export const DepartmentBriefSchema = z.object({
+  role: z.enum(DEPARTMENTS),
+  /** One sentence: this department's job in THIS segment. */
+  headline: z.string(),
+  /** Ordered and imperative, citing shot numbers. */
+  steps: z.array(z.string()),
+  /** Concrete kit, each with a cheap substitute in the same line. */
+  gear: z.array(z.string()),
+  /** What goes wrong on this specific segment, not general advice. */
+  pitfalls: z.array(z.string()),
+});
+
+export type DepartmentBrief = z.infer<typeof DepartmentBriefSchema>;
+
+export const SegmentShotSchema = z.object({
+  /** 0-based, matching shots.shot_index. */
+  shot_index: z.number(),
+  timecode: z.string(),
+  what_happens: z.string(),
+  how_it_was_made: z.string(),
+  /** Why the cut into and out of this shot lands here. Empty for a single-shot segment. */
+  cut_note: z.string(),
+});
+
+export const SegmentBreakdownSchema = z.object({
+  title: z.string(),
+  what_happens: z.string(),
+  setting: z.string(),
+  approach: z.string(),
+  /** Direct answer to what the uploader asked. Empty string when they asked nothing. */
+  focus_answer: z.string(),
+  shot_sequence: z.array(SegmentShotSchema),
+  departments: z.array(DepartmentBriefSchema),
+  shot_list: z.array(z.string()),
+  prep_checklist: z.array(z.string()),
+  minimum_crew: z.string(),
+  difficulty: z.enum(DIFFICULTIES),
+  budget_tiers: z.object({
+    under_500_usd: z.array(z.string()),
+    under_5000_usd: z.array(z.string()),
+    full_production: z.array(z.string()),
+  }),
+  common_mistakes: z.array(z.string()),
+});
+
+export type SegmentBreakdown = z.infer<typeof SegmentBreakdownSchema>;
+
+/** As stored on videos.breakdown. */
+export const StoredSegmentBreakdownSchema = SegmentBreakdownSchema.extend({
+  version: z.number(),
+  prompt_version: z.string(),
+  /** The question this breakdown was written against, so a refocus is visible. */
+  focus: z.string().nullable(),
+  generated_at: z.string(),
+});
+
+export type StoredSegmentBreakdown = z.infer<typeof StoredSegmentBreakdownSchema>;
+
+export const SEGMENT_BREAKDOWN_VERSION = 1;
+
+function cleanList(values: string[] | undefined, max: number, maxLen = 400): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values ?? []) {
+    const value = String(raw)
+      .replace(/^\s*(?:step\s*)?\d+[.):]\s*/i, "")
+      .trim()
+      .slice(0, maxLen);
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * Make a model response safe to render.
+ *
+ * Two guarantees the UI depends on: all nine departments are present in
+ * canonical order, and there is exactly one shot_sequence entry per real shot,
+ * in index order. The model is good at both and occasionally drops one; the
+ * renderer should not have to care which.
+ */
+export function normalizeSegmentBreakdown(
+  raw: SegmentBreakdown,
+  shots: { shotIndex: number; timecode: string; summary?: string | null }[]
+): SegmentBreakdown {
+  const byRole = new Map(raw.departments?.map((d) => [d.role, d]) ?? []);
+  const departments: DepartmentBrief[] = DEPARTMENTS.map((role) => {
+    const found = byRole.get(role);
+    if (!found) {
+      return {
+        role,
+        headline: "Nothing specific to this segment beyond standard practice.",
+        steps: [],
+        gear: [],
+        pitfalls: [],
+      };
+    }
+    return {
+      role,
+      headline: found.headline.trim().slice(0, 300),
+      steps: cleanList(found.steps, 12),
+      gear: cleanList(found.gear, 10),
+      pitfalls: cleanList(found.pitfalls, 5),
+    };
+  });
+
+  const bySequenceIndex = new Map(raw.shot_sequence?.map((s) => [s.shot_index, s]) ?? []);
+  const shot_sequence = shots.map((shot) => {
+    const found = bySequenceIndex.get(shot.shotIndex);
+    return {
+      shot_index: shot.shotIndex,
+      timecode: found?.timecode?.trim() || shot.timecode,
+      what_happens: found?.what_happens?.trim().slice(0, 600) || shot.summary?.trim() || "",
+      how_it_was_made: found?.how_it_was_made?.trim().slice(0, 600) || "",
+      cut_note: found?.cut_note?.trim().slice(0, 400) || "",
+    };
+  });
+
+  return {
+    title: raw.title.trim().slice(0, 160),
+    what_happens: raw.what_happens.trim().slice(0, 1200),
+    setting: raw.setting.trim().slice(0, 400),
+    approach: raw.approach.trim().slice(0, 1200),
+    focus_answer: raw.focus_answer.trim().slice(0, 3000),
+    shot_sequence,
+    departments,
+    // One line per shot, so a short list is padded from the sequence rather
+    // than silently describing fewer shots than the segment contains.
+    shot_list: cleanList(raw.shot_list, Math.max(shots.length, 1), 200),
+    prep_checklist: cleanList(raw.prep_checklist, 15),
+    minimum_crew: raw.minimum_crew.trim().slice(0, 200),
+    difficulty: raw.difficulty,
+    budget_tiers: {
+      under_500_usd: cleanList(raw.budget_tiers?.under_500_usd, 10),
+      under_5000_usd: cleanList(raw.budget_tiers?.under_5000_usd, 10),
+      full_production: cleanList(raw.budget_tiers?.full_production, 10),
+    },
+    common_mistakes: cleanList(raw.common_mistakes, 6),
+  };
+}
+
+/** Parse videos.breakdown. Returns null for absent, malformed or older shapes. */
+export function readSegmentBreakdown(value: unknown): StoredSegmentBreakdown | null {
+  if (!value || typeof value !== "object") return null;
+  const parsed = StoredSegmentBreakdownSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}

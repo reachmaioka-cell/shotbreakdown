@@ -7,6 +7,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { ShotTile } from "@/components/shot-tile";
 import { ArticleJsonLd } from "@/components/json-ld";
 import { getAppUrl } from "@/lib/env";
+import { FEATURES } from "@/lib/features";
 import { isLearnTopic, LEARN_META, LEARN_TOPICS, type LearnTopic } from "@/lib/learn";
 import { searchShots, shotFacetCounts } from "@/lib/shots";
 import { shotHref } from "@/lib/shot-format";
@@ -15,6 +16,9 @@ import { renderMarkdown } from "@/lib/markdown";
 export const revalidate = 600;
 
 export function generateStaticParams() {
+  // Nothing to prerender while the flag is off — every one of these pages 404s.
+  if (!FEATURES.learnPages) return [];
+
   return LEARN_TOPICS.map((topic) => ({ topic }));
 }
 
@@ -23,6 +27,8 @@ export async function generateMetadata({
 }: {
   params: Promise<{ topic: string }>;
 }): Promise<Metadata> {
+  if (!FEATURES.learnPages) return { robots: { index: false, follow: false } };
+
   const { topic } = await params;
   if (!isLearnTopic(topic)) return { title: "Learn | ShotBreakdown" };
   const meta = LEARN_META[topic];
@@ -41,6 +47,8 @@ async function readGuide(topic: LearnTopic) {
 }
 
 export default async function LearnPage({ params }: { params: Promise<{ topic: string }> }) {
+  if (!FEATURES.learnPages) notFound();
+
   const { topic } = await params;
   if (!isLearnTopic(topic)) notFound();
   const meta = LEARN_META[topic];

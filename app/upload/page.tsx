@@ -3,6 +3,7 @@ import Link from "next/link";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { UploadForm } from "@/components/upload-form";
+import { FEATURES } from "@/lib/features";
 import { planLimits } from "@/lib/plans";
 import { createClient } from "@/lib/supabase/server";
 import { monthlyVideoUsage } from "@/lib/videos";
@@ -10,9 +11,9 @@ import { monthlyVideoUsage } from "@/lib/videos";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Analyze a video",
+  title: "Break down a segment",
   description:
-    "Upload a video and ShotBreakdown detects every shot, picks the strongest frame, and analyzes the cinematography of each one.",
+    "Upload a segment of a video and ShotBreakdown detects the shots inside it and analyzes the cinematography of each one.",
   robots: { index: false, follow: true },
 };
 
@@ -42,21 +43,28 @@ export default async function UploadPage() {
     <div className="min-h-screen flex flex-col">
       <SiteHeader />
       <main id="main" className="flex-1 w-full mx-auto max-w-2xl px-4 sm:px-6 py-12">
-        <h1 className="text-[19px] font-medium text-text-0">Analyze a video</h1>
+        <h1 className="text-[19px] font-medium text-text-0">Break down a segment</h1>
         <p className="mt-2 mb-8 text-[14px] leading-relaxed text-text-1">
-          ShotBreakdown detects every shot, picks the strongest frame from each, and analyzes the
-          cinematography — camera, lens, lighting, colour, environment and mood. You can close this
-          tab; processing continues on the server.
+          Upload a segment — a scene, a take, one commercial — rather than a whole film.
+          ShotBreakdown finds the shots inside it and breaks each one down: camera, lens,
+          lighting, colour, environment and mood. You can close this tab; processing continues on
+          the server.
         </p>
 
-        <UploadForm limits={limits} authed={!!user} remaining={user ? remaining : limits.videosPerMonth} />
+        <UploadForm
+          limits={limits}
+          authed={!!user}
+          remaining={user ? remaining : limits.videosPerMonth}
+          linkSourcesEnabled={FEATURES.linkSources}
+          stillUploadsEnabled={FEATURES.stillUploads}
+        />
 
         <section className="mt-12 border-t border-line pt-6">
           <h2 className="eyebrow mb-3">What happens next</h2>
           <ol className="flex flex-col gap-2.5 text-[13px] text-text-1">
             <li className="flex gap-3">
               <span className="mono text-text-3">01</span>
-              Shot boundaries are detected from the footage itself.
+              Shot boundaries are detected from the segment itself.
             </li>
             <li className="flex gap-3">
               <span className="mono text-text-3">02</span>

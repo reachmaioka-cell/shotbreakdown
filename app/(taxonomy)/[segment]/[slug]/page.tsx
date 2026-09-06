@@ -6,6 +6,7 @@ import { ShotTile } from "@/components/shot-tile";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getAppUrl } from "@/lib/env";
+import { FEATURES } from "@/lib/features";
 import { searchShots, shotHref, type ShotSearchFilters } from "@/lib/shots";
 import {
   MIN_SHOTS_FOR_INDEX,
@@ -20,12 +21,17 @@ export const revalidate = 3600;
 type Params = Promise<{ segment: string; slug: string }>;
 
 export function generateStaticParams() {
+  // Nothing to prerender while the flag is off — every one of these pages 404s.
+  if (!FEATURES.taxonomyPages) return [];
+
   return TAXONOMY_GROUPS.flatMap((group) =>
     group.entries.map((entry) => ({ segment: group.segment, slug: entry.slug }))
   );
 }
 
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
+  if (!FEATURES.taxonomyPages) return { robots: { index: false, follow: false } };
+
   const { segment, slug } = await params;
   const entry = findTaxonomy(segment, slug);
   if (!entry) return { title: "Not found", robots: { index: false } };
@@ -45,6 +51,8 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
 }
 
 export default async function TaxonomyPage({ params }: { params: Params }) {
+  if (!FEATURES.taxonomyPages) notFound();
+
   const { segment, slug } = await params;
   const entry = findTaxonomy(segment, slug);
   const group = taxonomyGroup(segment);

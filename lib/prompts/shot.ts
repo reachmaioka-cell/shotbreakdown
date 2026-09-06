@@ -7,7 +7,7 @@ import {
   SUBJECT_TYPES,
 } from "@/lib/validation";
 
-export const SHOT_PROMPT_VERSION = "shot-v2";
+export const SHOT_PROMPT_VERSION = "shot-v3";
 
 export function shotSystemPrompt(opts: {
   frameCount: number;
@@ -19,6 +19,8 @@ export function shotSystemPrompt(opts: {
   failureModes?: string;
   knowledgeBlock?: string;
   similarBlock?: string;
+  /** What the uploader asked about the segment this shot belongs to. */
+  focus?: string | null;
 }): string {
   const frames =
     opts.frameCount > 1
@@ -58,6 +60,10 @@ export function shotSystemPrompt(opts: {
     "lighting_notes and color_notes: two or three sentences each on how the light and the grade were actually achieved, specific enough to act on.",
     "rig_guess, focal_length_mm_est, aperture_est, sensor_format_guess: committed estimates. Never a camera or lens model you cannot see.",
     "ai_tools: if the shot looks AI-generated (Runway, Sora, Kling, Veo, Midjourney video, etc.), name the likely tool and the telltales. Otherwise exactly 'none'.",
+
+    opts.focus
+      ? `The person who uploaded this segment asked: "${opts.focus}"\nFill every field as usual — this record is what the whole segment is searched and reasoned over, so it must stay complete. Where the question touches a field, spend the specificity there: let description, why_it_works, lighting_notes and color_notes speak to what they asked. Do not answer the question directly here and do not mention the question; another pass writes the answer.`
+      : "",
 
     opts.aboutFilmmaker ? `About this filmmaker:\n${opts.aboutFilmmaker}` : "",
     opts.knowledgeBlock ? `Filmmaking knowledge base (technique references):\n${opts.knowledgeBlock}` : "",

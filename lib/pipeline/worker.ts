@@ -13,6 +13,7 @@ import {
   runAnalyzeShots,
   runFinalizeVideo,
   runGenerateRecreationGuide,
+  runGenerateSegmentBreakdown,
   runIngestVideo,
   runReanalyzeShot,
 } from "@/lib/pipeline/stages";
@@ -28,6 +29,12 @@ export type WorkerReport = {
   details: { id: string; type: string; ok: boolean; error?: string }[];
 };
 
+/** Jobs that run AFTER a video is complete; their failure is not the video's. */
+const DERIVED_JOB_TYPES = new Set<string>([
+  "generate_recreation_guide",
+  "generate_segment_breakdown",
+]);
+
 async function runJob(job: ProcessingJob): Promise<Record<string, unknown>> {
   switch (job.job_type) {
     case "ingest_video":
@@ -40,6 +47,8 @@ async function runJob(job: ProcessingJob): Promise<Record<string, unknown>> {
       return runReanalyzeShot(job);
     case "generate_recreation_guide":
       return runGenerateRecreationGuide(job);
+    case "generate_segment_breakdown":
+      return runGenerateSegmentBreakdown(job);
     default:
       throw new PipelineError(`Unknown job type ${job.job_type}`, "unknown_job", false);
   }
@@ -88,9 +97,18 @@ export async function runWorkerTick(batchSize = 2): Promise<WorkerReport> {
       const code = e instanceof PipelineError ? e.code : "unexpected";
       const message = e instanceof Error ? e.message : "Job failed";
       const { terminal } = await failJob(job, message, { retryable });
-      // A recreation-guide failure must not mark the video itself as failed.
-      if (terminal && job.job_type !== "generate_recreation_guide") {
+      // The video itself is only "failed" when its ANALYSIS failed. A
+      // breakdown or guide is written after the shots are already complete and
+      // searchable, so its failure is reported on its own status field instead
+      // of throwing away a segment that processed fine.
+      if (terminal && !DERIVED_JOB_TYPES.has(job.job_type)) {
         await markVideoFailed(job, message, code);
+      }
+      if (terminal && job.job_type === "generate_segment_breakdown" && job.video_id) {
+        await createAdminClient()
+          .from("videos")
+          .update({ breakdown_status: "failed", breakdown_error: message.slice(0, 500) })
+          .eq("id", job.video_id);
       }
       report.failed += 1;
       report.details.push({ id: job.id, type: job.job_type, ok: false, error: message });

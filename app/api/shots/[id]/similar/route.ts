@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server";
 import { trackAsync } from "@/lib/analytics";
+import { FEATURES } from "@/lib/features";
 import { jsonError } from "@/lib/http";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { findSimilarShots } from "@/lib/shots";
 import { createClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  // The shot page hides this panel while the public library is off; the route
+  // says the same thing, so the feature is off everywhere rather than only in
+  // the UI.
+  if (!FEATURES.similarShots) return jsonError("Not found", 404);
+
   const { id } = await params;
   const supabase = await createClient();
   const {

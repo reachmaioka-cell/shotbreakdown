@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { FEATURES } from "@/lib/features";
 import { SiteHeader } from "@/components/site-header";
 import { MUSIC_VIDEO_CURRICULUM } from "@/lib/learning/music-videos";
 import { FILM_CURRICULUM } from "@/lib/learning/films";
@@ -10,7 +11,14 @@ import { AI_TOOL_CURRICULUM } from "@/lib/learning/ai-tools";
 import { LearningActions } from "./learning-actions";
 import { RagProbe } from "./rag-probe";
 
+// Admin-only and cookie-dependent: never prerendered. Declared explicitly so the
+// flag stays a runtime read — without it, gating the page off removes the only
+// dynamic API in the guarded path and Next bakes a static 404 at build time.
+export const dynamic = "force-dynamic";
+
 export default async function AdminLearningPage() {
+  if (!FEATURES.adminLearning) notFound();
+
   const supabase = await createClient();
   const {
     data: { user },

@@ -247,6 +247,70 @@ export async function extractRepresentativeFrame(
   ]);
 }
 
+/**
+ * Cut a segment out of a longer file.
+ *
+ * Re-encodes rather than stream-copying. A stream copy can only cut on
+ * keyframes, so it silently moves the in-point by up to a GOP — a second or
+ * more — and the user's chosen segment is not the segment that gets analysed.
+ * Every timecode downstream (shot boundaries, the breakdown's cut notes, the
+ * player) is relative to this output, so the cut has to land where they asked.
+ *
+ * `-ss` before `-i` seeks by index and is fast; `-accurate_seek` makes that
+ * seek frame-exact rather than keyframe-aligned. Audio is kept because the
+ * segment is played back in the app.
+ */
+export async function trimVideo(
+  input: string,
+  output: string,
+  startSeconds: number,
+  endSeconds: number
+): Promise<void> {
+  const start = Math.max(0, startSeconds);
+  const duration = endSeconds - start;
+  if (!(duration > 0)) {
+    throw new Error(`trimVideo: end (${endSeconds}) must be after start (${startSeconds})`);
+  }
+
+  await runFfmpeg([
+    "-hide_banner",
+    "-nostats",
+    "-accurate_seek",
+    "-ss",
+    start.toFixed(3),
+    "-i",
+    input,
+    "-t",
+    duration.toFixed(3),
+    "-map",
+    "0:v:0",
+    // Audio is optional: a silent screen recording has no stream to map.
+    "-map",
+    "0:a:0?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    // Timestamps restart at zero so the segment is its own timeline.
+    "-reset_timestamps",
+    "1",
+    "-avoid_negative_ts",
+    "make_zero",
+    "-movflags",
+    "+faststart",
+    "-y",
+    output,
+  ]);
+}
+
 export type FrameStats = { meanLuma: number; stdevLuma: number };
 
 /** Mean/stdev luma via signalstats — used to reject black, blown or flat frames. */

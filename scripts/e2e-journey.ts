@@ -6,6 +6,9 @@
  * sequences, sharing, export, deletion and authorization. Nothing is stubbed —
  * a failure here is a failure a user would hit.
  *
+ * Checks that belong to a feature flagged off for launch skip themselves and
+ * print "○ ... skipped (FEATURE_X off)". A skip is never counted as a pass.
+ *
  *   npm run dev
  *   npx tsx --env-file=.env.local scripts/e2e-journey.ts path/to/clip.mp4
  */
@@ -13,6 +16,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { createAdminClient } from "../lib/supabase/admin";
 import { UPLOAD_BUCKET } from "../lib/constants";
+import { FEATURES } from "../lib/features";
 import { drainQueue } from "../lib/pipeline/worker";
 
 const BASE = process.env.E2E_BASE_URL ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://127.0.0.1:3002";
@@ -31,6 +35,11 @@ function check(name: string, ok: boolean, detail?: unknown) {
     failures.push(name);
     console.log(`  \x1b[31m✗\x1b[0m ${name}${detail !== undefined ? ` — ${JSON.stringify(detail).slice(0, 200)}` : ""}`);
   }
+}
+
+/** Never counted as a pass: a skipped check prints the flag that skipped it. */
+function skip(name: string, flag: string) {
+  console.log(`  \x1b[33m○\x1b[0m ${name} — skipped (${flag} off)`);
 }
 
 function step(name: string) {
@@ -107,11 +116,8 @@ async function main() {
   const landing = await fetch(BASE);
   const landingHtml = await landing.text();
   check("landing responds 200", landing.status === 200);
-  check(
-    "value proposition is above the fold",
-    /searchable\s*\n?\s*cinematography reference library|searchable cinematography/i.test(landingHtml)
-  );
-  check("has a primary call to action", /Analyze a video/i.test(landingHtml));
+  check("value proposition is above the fold", /upload a segment/i.test(landingHtml));
+  check("has a primary call to action", /href="\/upload"/.test(landingHtml));
 
   step("2. Sign up via the real magic-link callback");
   const { data: created, error: createError } = await admin.auth.admin.createUser({
@@ -222,10 +228,17 @@ async function main() {
   check("view counter accepts a request", viewRes.status === 200, viewRes.status);
 
   step("8. Find Similar returns visually related shots");
+  // FEATURE_SIMILAR_SHOTS only hides the panel on the shot page: the route is
+  // unflagged and still reachable, so it still has to answer. With the flag off
+  // there is nothing to surface beyond the user's own shots, so only the shape
+  // of the response is asserted and the product-level check reports as skipped.
   const similar = await json<{ shots?: unknown[] }>(
     await session.fetch(`/api/shots/${shotId}/similar?limit=5`)
   );
   check("similar endpoint responded", Array.isArray(similar.shots), similar);
+  if (!FEATURES.similarShots) {
+    skip("Find Similar is surfaced on the shot page", "FEATURE_SIMILAR_SHOTS");
+  }
 
   step("9. Collections, nesting and sequences");
   const collection = await json<{ collection?: { id: string } }>(
@@ -413,10 +426,17 @@ async function main() {
   await admin.from("profiles").update({ plan: "free" }).eq("id", userId);
   const overflow: number[] = [];
   for (let i = 0; i < 4; i++) {
+    // The cap is enforced before the video row is created, so a submission that
+    // would fail later still proves it. A pasted link is turned away by the
+    // feature flag before it ever reaches the cap, so with link sources off the
+    // probe goes through the upload path the product actually ships.
+    const body = FEATURES.linkSources
+      ? { url: `https://www.youtube.com/watch?v=limit${i}test` }
+      : { filePath: `${userId}/cap-probe-${i}.mp4`, sourceType: "video_upload" };
     const res = await session.fetch("/api/videos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: `https://www.youtube.com/watch?v=limit${i}test` }),
+      body: JSON.stringify(body),
     });
     overflow.push(res.status);
   }

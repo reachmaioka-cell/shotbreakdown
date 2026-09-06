@@ -3,8 +3,9 @@ import { z } from "zod";
 import { trackAsync } from "@/lib/analytics";
 import { reportError } from "@/lib/errors";
 import { jsonError } from "@/lib/http";
+import { FEATURES } from "@/lib/features";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { searchShots, type ShotSearchFilters } from "@/lib/shots";
+import { searchShots, type ShotScope, type ShotSearchFilters } from "@/lib/shots";
 import { savedShotIds } from "@/lib/collections";
 import { createClient } from "@/lib/supabase/server";
 import { FILTER_KEYS } from "@/lib/filters";
@@ -25,6 +26,11 @@ export async function GET(request: Request) {
   const limited = await enforceRateLimit(user ? "search" : "search_anon", request, user?.id ?? null);
   if (limited) return limited;
 
+  // Every searchable shot belongs to somebody while the public library is off,
+  // so an anonymous caller has nothing to search. Still rate limited above, so
+  // this cannot be used to probe for free.
+  if (!FEATURES.publicLibrary && !user) return jsonError("Unauthorized", 401);
+
   const url = new URL(request.url);
   const parsed = Query.safeParse({
     q: url.searchParams.get("q") ?? undefined,
@@ -34,8 +40,16 @@ export async function GET(request: Request) {
   });
   if (!parsed.success) return jsonError("Invalid query", 400);
 
-  const scope = parsed.data.scope ?? "public";
-  if (scope !== "public" && !user) return jsonError("Unauthorized", 401);
+  const requested = parsed.data.scope ?? "public";
+  if (requested !== "public" && !user) return jsonError("Unauthorized", 401);
+
+  // Off the public library the only shots a caller may search are their own, so
+  // "public" means their own too rather than an empty result.
+  const scope: ShotScope = FEATURES.publicLibrary
+    ? requested
+    : requested === "saved"
+      ? "saved"
+      : "mine";
 
   const filters: ShotSearchFilters = {};
   for (const key of FILTER_KEYS) {

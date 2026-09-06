@@ -5,6 +5,7 @@ import { ShotTile } from "@/components/shot-tile";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getAppUrl } from "@/lib/env";
+import { FEATURES } from "@/lib/features";
 import { humanize } from "@/lib/filters";
 import { searchShots, shotFacetCounts } from "@/lib/shots";
 import { shotHref } from "@/lib/shot-format";
@@ -15,6 +16,9 @@ export const revalidate = 3600;
 type Params = Promise<{ tag: string }>;
 
 export async function generateStaticParams() {
+  // Nothing to prerender while the flag is off — every one of these pages 404s.
+  if (!FEATURES.tagPages) return [];
+
   try {
     const facets = await shotFacetCounts({ scope: "public" });
     return (facets.tags ?? [])
@@ -27,6 +31,8 @@ export async function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
+  if (!FEATURES.tagPages) return { robots: { index: false, follow: false } };
+
   const { tag } = await params;
   const label = humanize(decodeURIComponent(tag));
   return {
@@ -37,6 +43,8 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
 }
 
 export default async function TagPage({ params }: { params: Params }) {
+  if (!FEATURES.tagPages) notFound();
+
   const { tag } = await params;
   const decoded = decodeURIComponent(tag);
   if (!/^[a-z0-9-]{1,60}$/i.test(decoded)) notFound();

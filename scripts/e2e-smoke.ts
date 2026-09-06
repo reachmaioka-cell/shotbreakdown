@@ -2,9 +2,14 @@
  * Local smoke test for the retrieval stack: embeddings, RAG and shot search.
  * The full product path is covered by scripts/e2e-journey.ts.
  *
+ * Checks that only make sense over a public corpus skip themselves when the
+ * flag that owns them is off, and say so — a skip prints "○ ... skipped
+ * (FEATURE_X off)" so it can never be read as a pass.
+ *
  *   npm run e2e:smoke
  */
 import { embed } from "@/lib/embeddings";
+import { FEATURES } from "@/lib/features";
 import { retrieveKnowledge } from "@/lib/knowledge";
 import { searchShots, shotFacetCounts } from "@/lib/shots";
 import { instagramOembed } from "@/lib/source";
@@ -32,53 +37,69 @@ async function main() {
       : "✗ Knowledge chunks empty — run npm run db:backfill-chunks"
   );
 
-  const hits = await searchShots({ query: "anamorphic neon handheld", limit: 5 });
-  results.push(
-    hits.shots.length > 0
-      ? `✓ Shot search (${hits.shots.length} hits, semantic=${hits.usedSemantic})`
-      : "✗ Shot search empty"
-  );
+  // Everything in this block searches shots the user did not upload. With the
+  // public library off there is no corpus to hold it up, so an empty result is
+  // the correct state rather than a regression.
+  if (FEATURES.publicLibrary) {
+    const hits = await searchShots({ query: "anamorphic neon handheld", limit: 5 });
+    results.push(
+      hits.shots.length > 0
+        ? `✓ Shot search (${hits.shots.length} hits, semantic=${hits.usedSemantic})`
+        : "✗ Shot search empty"
+    );
 
-  const filtered = await searchShots({ filters: { lighting_key: ["low-key"] }, limit: 5 });
-  results.push(
-    filtered.total > 0
-      ? `✓ Facet filtering (${filtered.total} low-key shots)`
-      : "✗ Facet filtering returned nothing — run npm run db:enrich-shots"
-  );
+    const filtered = await searchShots({ filters: { lighting_key: ["low-key"] }, limit: 5 });
+    results.push(
+      filtered.total > 0
+        ? `✓ Facet filtering (${filtered.total} low-key shots)`
+        : "✗ Facet filtering returned nothing — run npm run db:enrich-shots"
+    );
 
-  const facets = await shotFacetCounts({ scope: "public" });
-  const facetGroups = Object.keys(facets).length;
-  results.push(
-    facetGroups >= 8 ? `✓ Facet counts (${facetGroups} groups)` : `✗ Only ${facetGroups} facet groups`
-  );
+    const facets = await shotFacetCounts({ scope: "public" });
+    const facetGroups = Object.keys(facets).length;
+    results.push(
+      facetGroups >= 8
+        ? `✓ Facet counts (${facetGroups} groups)`
+        : `✗ Only ${facetGroups} facet groups`
+    );
 
-  const { count: embedded } = await admin
-    .from("shots")
-    .select("id", { count: "exact", head: true })
-    .eq("visibility", "public")
-    .not("embedding", "is", null);
-  const { count: publicShots } = await admin
-    .from("shots")
-    .select("id", { count: "exact", head: true })
-    .eq("visibility", "public");
-  const { count: withFacets } = await admin
-    .from("shots")
-    .select("id", { count: "exact", head: true })
-    .eq("visibility", "public")
-    .not("metadata->composition", "is", null);
-  results.push(
-    embedded === publicShots
-      ? `✓ Every public shot is indexed (${embedded})`
-      : `✗ ${publicShots! - embedded!} public shots have no embedding`
-  );
-  results.push(
-    withFacets === publicShots
-      ? `✓ Every public shot has facets (${withFacets})`
-      : `✗ ${publicShots! - withFacets!} public shots have no composition facets — run npm run db:enrich-shots`
-  );
+    const { count: embedded } = await admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("visibility", "public")
+      .not("embedding", "is", null);
+    const { count: publicShots } = await admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("visibility", "public");
+    const { count: withFacets } = await admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("visibility", "public")
+      .not("metadata->composition", "is", null);
+    results.push(
+      embedded === publicShots
+        ? `✓ Every public shot is indexed (${embedded})`
+        : `✗ ${publicShots! - embedded!} public shots have no embedding`
+    );
+    results.push(
+      withFacets === publicShots
+        ? `✓ Every public shot has facets (${withFacets})`
+        : `✗ ${publicShots! - withFacets!} public shots have no composition facets — run npm run db:enrich-shots`
+    );
+  } else {
+    results.push("○ Public shot search skipped (FEATURE_PUBLIC_LIBRARY off)");
+    results.push("○ Facet filtering skipped (FEATURE_PUBLIC_LIBRARY off)");
+    results.push("○ Facet counts skipped (FEATURE_PUBLIC_LIBRARY off)");
+    results.push("○ Public shot embedding and facet coverage skipped (FEATURE_PUBLIC_LIBRARY off)");
+  }
 
-  const ig = await instagramOembed("https://www.instagram.com/reel/C0fake/");
-  results.push(ig.thumbnail === null ? "✓ oEmbed handles a bad link" : "✗ oEmbed unexpected");
+  if (FEATURES.linkSources) {
+    const ig = await instagramOembed("https://www.instagram.com/reel/C0fake/");
+    results.push(ig.thumbnail === null ? "✓ oEmbed handles a bad link" : "✗ oEmbed unexpected");
+  } else {
+    results.push("○ oEmbed skipped (FEATURE_LINK_SOURCES off)");
+  }
 
   console.log(results.join("\n"));
   if (results.some((r) => r.startsWith("✗"))) process.exitCode = 1;

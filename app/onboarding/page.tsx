@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { SiteHeader } from "@/components/site-header";
+import { FEATURES } from "@/lib/features";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,8 @@ export const metadata: Metadata = {
  * only sharpen recreation advice later.
  */
 export default async function OnboardingPage() {
+  if (!FEATURES.onboarding) notFound();
+
   const supabase = await createClient();
   const {
     data: { user },

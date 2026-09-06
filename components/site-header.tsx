@@ -13,10 +13,15 @@ type Me = {
   email?: string | null;
 };
 
+/*
+ * Same labels and same order as the app shell's sidebar. The routes keep their
+ * old paths; only what a person calls them changed, and the two navigations
+ * disagreeing about the name of a page is worse than either name.
+ */
 const NAV = [
-  { href: "/library", label: "Library" },
+  { href: "/videos", label: "Segments" },
+  { href: "/library", label: "Shots" },
   { href: "/collections", label: "Collections" },
-  { href: "/videos", label: "Videos" },
 ];
 
 export function SiteHeader() {
@@ -115,7 +120,7 @@ export function SiteHeader() {
                     className="absolute right-0 top-full z-40 mt-1 w-44 rounded-[3px] border border-line bg-ink-1 py-1 shadow-xl shadow-black/50"
                   >
                     <MenuLink href="/library?scope=saved">Saved shots</MenuLink>
-                    <MenuLink href="/videos">My videos</MenuLink>
+                    <MenuLink href="/videos">My segments</MenuLink>
                     <MenuLink href="/collections">Collections</MenuLink>
                     <MenuLink href="/settings">Settings</MenuLink>
                     {me.isAdmin ? <MenuLink href="/admin/review">Admin</MenuLink> : null}

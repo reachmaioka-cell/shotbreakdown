@@ -13,6 +13,17 @@ const nextConfig: NextConfig = {
     "fluent-ffmpeg",
   ],
   images: {
+    /*
+     * Next 16's image optimizer refuses any upstream that resolves to a private
+     * IP, which is the right default: it stops a user-supplied image URL being
+     * used to probe the internal network. Locally, Supabase storage IS on a
+     * private IP (127.0.0.1:54321), so every frame thumbnail fails to optimize
+     * and the app looks broken while being perfectly correct.
+     *
+     * Allowed in development only. In production the bucket is on
+     * *.supabase.co, a public host, and the guard stays on.
+     */
+    dangerouslyAllowLocalIP: process.env.NODE_ENV === "development",
     formats: ["image/avif", "image/webp"],
     minimumCacheTTL: 86400,
     deviceSizes: [360, 480, 640, 828, 1080, 1280, 1600, 1920],

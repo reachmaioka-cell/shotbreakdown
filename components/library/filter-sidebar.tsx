@@ -161,7 +161,13 @@ export function FilterSidebar({
       {segments.length > 0 ? (
         <Group
           label="Segment"
-          open={open.__segment ?? true}
+          /*
+           * Open by default only while the list is short enough to read at a
+           * glance. Someone with fifty segments would otherwise scroll past all
+           * of them to reach shot size, which is the filter they actually came
+           * for. A chosen segment forces it open so the active filter is visible.
+           */
+          open={open.__segment ?? (Boolean(videoId) || segments.length <= 8)}
           onToggle={(next) => setOpen((current) => ({ ...current, __segment: next }))}
           badge={videoId ? 1 : 0}
           onClear={videoId ? () => selectSegment(null) : undefined}
@@ -170,7 +176,11 @@ export function FilterSidebar({
             One segment at a time: the search takes a single video_id, so these
             are radios rather than checkboxes that could never both be on.
           */}
-          <fieldset className="m-0 border-0 p-0">
+          <fieldset
+            className={`m-0 border-0 p-0 ${
+              segments.length > 10 ? "max-h-64 overflow-y-auto no-scrollbar pr-1" : ""
+            }`}
+          >
             <legend className="sr-only">Filter by segment</legend>
             <SegmentRadio
               name={segmentName}

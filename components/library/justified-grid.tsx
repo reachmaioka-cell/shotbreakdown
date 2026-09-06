@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { AddToCollection } from "@/components/add-to-collection";
 import { ShotCell } from "@/components/library/shot-cell";
 import { EmptyState, ErrorState, Spinner } from "@/components/ui/primitives";
@@ -29,6 +36,75 @@ function aspectOf(shot: Pick<ShotCard, "width" | "height" | "aspectRatio">): num
   }
   if (!ratio || !Number.isFinite(ratio) || ratio <= 0) ratio = 16 / 9;
   return Math.min(5, Math.max(0.2, ratio));
+}
+
+const GAP = 4;
+
+/**
+ * Pack shots into rows the way a contact sheet does.
+ *
+ * Flex alone cannot do this. Giving each cell `flex-basis: aspect * target` and
+ * letting it grow means the row breaks on the sum of the BASES, so when three
+ * frames miss fitting by a few pixels the two that remain stretch across the
+ * whole width — a 220px target rendering at 330px. The realised height has to
+ * be computed from the row that was actually chosen, which means knowing the
+ * container width.
+ *
+ * Greedy is the right algorithm here: add frames until the row is at least as
+ * wide as the container, then take whichever of the two candidate rows lands
+ * closer to the target height. The last row keeps the target height rather than
+ * being justified, so a single trailing frame is not blown up to full width.
+ */
+function packRows(
+  aspects: number[],
+  containerWidth: number,
+  target: number
+): { start: number; count: number; height: number }[] {
+  if (containerWidth <= 0 || aspects.length === 0) return [];
+  const rows: { start: number; count: number; height: number }[] = [];
+
+  let start = 0;
+  while (start < aspects.length) {
+    let sum = 0;
+    let end = start;
+    let height = target;
+
+    while (end < aspects.length) {
+      const next = sum + aspects[end];
+      const gaps = GAP * (end - start);
+      const heightWith = (containerWidth - gaps) / next;
+      if (next > 0 && heightWith <= target) {
+        // Adding this frame drops the row below the target. Keep it only when
+        // it lands closer to the target than stopping short would.
+        const heightWithout =
+          sum > 0 ? (containerWidth - GAP * Math.max(0, end - start - 1)) / sum : Infinity;
+        const takeIt = Math.abs(heightWith - target) <= Math.abs(heightWithout - target);
+        if (takeIt) {
+          sum = next;
+          end += 1;
+        }
+        height = takeIt ? heightWith : heightWithout;
+        break;
+      }
+      sum = next;
+      end += 1;
+    }
+
+    if (end === start) {
+      // One frame so wide it cannot reach the target alone; give it the row.
+      sum = aspects[start];
+      end = start + 1;
+      height = containerWidth / sum;
+    } else if (end >= aspects.length && height === target) {
+      // Trailing row: leave it at the target rather than justifying it.
+      height = target;
+    }
+
+    rows.push({ start, count: end - start, height });
+    start = end;
+  }
+
+  return rows;
 }
 
 /*
@@ -198,6 +274,12 @@ export function JustifiedGrid({
   const [focusIndex, setFocusIndex] = useState(-1);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLUListElement>(null);
+  /*
+   * Row heights depend on how wide the grid actually is, which only the browser
+   * knows. 0 until measured: the first paint uses the flex fallback below, then
+   * one layout pass swaps in the packed rows.
+   */
+  const [width, setWidth] = useState(0);
   // Only an arrow key may move focus. Tabbing into a cell syncs the caret so
   // the next arrow continues from there, and must not pull focus back out of
   // whatever the user actually landed on.
@@ -303,6 +385,32 @@ export function JustifiedGrid({
     anchors?.[focusIndex]?.focus();
   }, [focusIndex]);
 
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const next = Math.round(entries[0]?.contentRect.width ?? 0);
+      // Sub-pixel jitter would re-pack every row on every scroll.
+      setWidth((current) => (Math.abs(current - next) > 1 ? next : current));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const aspects = useMemo(() => shots.map(aspectOf), [shots]);
+  const rows = useMemo(
+    () => packRows(aspects, width, rowHeight),
+    [aspects, width, rowHeight]
+  );
+  /** Realised height per cell index, once the container has been measured. */
+  const heights = useMemo(() => {
+    const out = new Map<number, number>();
+    for (const row of rows) {
+      for (let i = row.start; i < row.start + row.count; i += 1) out.set(i, row.height);
+    }
+    return out;
+  }, [rows]);
+
   function syncCaret(event: React.FocusEvent<HTMLUListElement>) {
     const cell = (event.target as HTMLElement).closest<HTMLElement>("[data-cell-index]");
     if (!cell) return;
@@ -327,11 +435,22 @@ export function JustifiedGrid({
                 key={shot.id}
                 data-cell-index={index}
                 className="relative min-w-0"
-                style={{
-                  flexGrow: aspect,
-                  flexBasis: `${aspect * rowHeight}px`,
-                  aspectRatio: String(aspect),
-                }}
+                style={
+                  heights.has(index)
+                    ? {
+                        // Packed: an exact size, so the row fills the width and
+                        // every frame in it shares one height.
+                        width: `${aspect * heights.get(index)!}px`,
+                        height: `${heights.get(index)!}px`,
+                        flex: "0 0 auto",
+                      }
+                    : {
+                        // Pre-measurement fallback for the very first paint.
+                        flexGrow: aspect,
+                        flexBasis: `${aspect * rowHeight}px`,
+                        aspectRatio: String(aspect),
+                      }
+                }
               >
                 <ShotCell
                   shot={shot}
@@ -348,7 +467,9 @@ export function JustifiedGrid({
             past it, and greedy enough that the frames beside it keep their
             target height instead of being justified across the whole width.
           */}
-          <li aria-hidden className="h-0" style={{ flex: "999 0 0%" }} />
+          {heights.size === 0 ? (
+            <li aria-hidden className="h-0" style={{ flex: "999 0 0%" }} />
+          ) : null}
         </ul>
       )}
 

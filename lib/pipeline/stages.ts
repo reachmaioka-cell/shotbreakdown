@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
+import {
+  AI_RECREATION_PROMPT_VERSION,
+  generateAiRecreation,
+  MAX_AI_FRAMES,
+} from "@/lib/ai-recreation";
 import { SIGNED_URL_TTL_SEC, UPLOAD_BUCKET } from "@/lib/constants";
 import { embed, shotEmbeddingText } from "@/lib/embeddings";
 import {
@@ -27,8 +32,11 @@ import { probeVideo, runFfmpeg, trimVideo } from "@/lib/video/ffmpeg";
 import { instagramOembed, tiktokOembed, youtubeThumbnailAndTitle } from "@/lib/source";
 import { fetchAnalysisImage } from "@/lib/media";
 import {
+  AI_RECREATION_VERSION,
+  readSegmentBreakdown,
   SEGMENT_BREAKDOWN_VERSION,
   ShotMetadataSchema,
+  type StoredAiRecreation,
   type StoredSegmentBreakdown,
   type StoredShotRecord,
 } from "@/lib/validation";
@@ -1335,6 +1343,149 @@ export async function runGenerateSegmentBreakdown(
       return null;
     });
     return { videoId, shots: inputs.length, requeuedForNewFocus: true };
+  }
+
+  return { videoId, shots: inputs.length, framed: inputs.filter((s) => s.image).length };
+}
+
+/**
+ * Write the generative route to the same segment.
+ *
+ * Never enqueued automatically. Most people opening a breakdown intend to shoot
+ * the thing, and a generative pipeline bolted onto every answer would be padding
+ * for them; this runs only when someone presses the button that asks for it.
+ */
+export async function runGenerateAiRecreation(
+  job: ProcessingJob
+): Promise<Record<string, unknown>> {
+  const admin = createAdminClient();
+  const videoId = job.video_id ?? (job.payload.videoId as string | undefined);
+  if (!videoId) throw new PipelineError("Job has no video", "bad_job", false);
+
+  const { data: video } = await admin
+    .from("videos")
+    .select("id, user_id, title, focus, duration_seconds, breakdown")
+    .eq("id", videoId)
+    .maybeSingle();
+  if (!video) throw new PipelineError("Segment not found", "not_found", false);
+
+  // The AI answer is written against the camera answer: same shots, same
+  // reading of the look, and it argues with the post section rather than
+  // starting from nothing. Without one there is nothing to write against, and
+  // waiting will not produce one, so this is terminal rather than retryable.
+  const breakdown = readSegmentBreakdown(video.breakdown);
+  if (!breakdown) {
+    throw new PipelineError(
+      "This segment has no breakdown to build the AI route from",
+      "no_breakdown",
+      false
+    );
+  }
+
+  const { data: shotRows } = await admin
+    .from("shots")
+    .select("id, shot_index, start_seconds, end_seconds, metadata")
+    .eq("video_id", videoId)
+    .eq("status", "complete")
+    .order("shot_index");
+
+  const shots = shotRows ?? [];
+  if (shots.length === 0) {
+    throw new PipelineError(
+      "This segment has no analysed shots to build the AI route from",
+      "no_shots",
+      false
+    );
+  }
+
+  const frameIndices = new Set(selectFrameIndices(shots.length, MAX_AI_FRAMES));
+  const wanted = shots.filter((_, i) => frameIndices.has(i)).map((s) => s.id as string);
+
+  const framesByShot = new Map<string, string>();
+  if (wanted.length > 0) {
+    const { data: frames } = await admin
+      .from("shot_frames")
+      .select("shot_id, storage_path, is_representative, timestamp_seconds")
+      .in("shot_id", wanted)
+      .order("timestamp_seconds");
+    for (const frame of frames ?? []) {
+      const shotId = frame.shot_id as string;
+      if (frame.is_representative || !framesByShot.has(shotId)) {
+        framesByShot.set(shotId, frame.storage_path as string);
+      }
+    }
+  }
+
+  const inputs: SegmentShotInput[] = await Promise.all(
+    shots.map(async (shot, i) => {
+      const parsed = ShotMetadataSchema.safeParse(shot.metadata ?? {});
+      let image: { buffer: Buffer; contentType: string } | null = null;
+      const path = frameIndices.has(i) ? framesByShot.get(shot.id as string) : undefined;
+      if (path) {
+        try {
+          image = await fetchAnalysisImage(await signedUrl(admin, path));
+        } catch (e) {
+          // A missing frame degrades the prompt; it must not fail the answer.
+          console.error("ai recreation frame", shot.id, e instanceof Error ? e.message : e);
+        }
+      }
+      return {
+        shotIndex: shot.shot_index as number,
+        startSeconds: Number(shot.start_seconds),
+        endSeconds: Number(shot.end_seconds),
+        metadata: parsed.success ? parsed.data : null,
+        image,
+      };
+    })
+  );
+
+  const [{ data: preferences }, { data: insight }] = await Promise.all([
+    video.user_id
+      ? admin.from("user_preferences").select("*").eq("user_id", video.user_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    admin
+      .from("prompt_insights")
+      .select("summary")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  const focus = ((video.focus as string | null) ?? "").trim() || null;
+  const segmentSeconds =
+    video.duration_seconds !== null
+      ? Number(video.duration_seconds)
+      : Math.max(...inputs.map((s) => s.endSeconds), 0);
+
+  const recreation = await generateAiRecreation({
+    shots: inputs,
+    breakdown,
+    focus,
+    videoTitle: (video.title as string | null) ?? null,
+    segmentSeconds,
+    preferences: (preferences as never) ?? null,
+    insights: (insight?.summary as string | null) ?? null,
+  });
+
+  const stored: StoredAiRecreation = {
+    ...recreation,
+    version: AI_RECREATION_VERSION,
+    prompt_version: AI_RECREATION_PROMPT_VERSION,
+    generated_at: new Date().toISOString(),
+  };
+
+  const { error } = await admin
+    .from("videos")
+    .update({
+      ai_recreation: stored,
+      ai_recreation_status: "ready",
+      ai_recreation_error: null,
+      ai_recreation_prompt_version: AI_RECREATION_PROMPT_VERSION,
+      ai_recreation_generated_at: stored.generated_at,
+    })
+    .eq("id", videoId);
+  if (error) {
+    throw new PipelineError(`Could not save the AI recreation: ${error.message}`, "db_write_failed");
   }
 
   return { videoId, shots: inputs.length, framed: inputs.filter((s) => s.image).length };

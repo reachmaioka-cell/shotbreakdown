@@ -1,6 +1,6 @@
 import { DEPARTMENTS } from "@/lib/validation";
 
-export const SEGMENT_PROMPT_VERSION = "segment-v1";
+export const SEGMENT_PROMPT_VERSION = "segment-v2";
 
 /**
  * The heads of department, in a room, having watched the segment.
@@ -55,6 +55,8 @@ export function segmentSystemPrompt(opts: {
 
     "Each department brief: headline is one sentence naming that department's job in this segment. steps are ordered and imperative, at most two sentences each, citing shot numbers. gear names real kit and, in the same line, a cheap substitute in brackets. pitfalls are what goes wrong on THIS segment.",
 
+    "DEPTH. A department with real work on this segment needs FOUR TO EIGHT steps, enough that someone in that role could work from it alone without asking a follow-up question. Two steps is a summary, not a brief, and a reader in that role will have to go elsewhere — which is the one failure this document cannot afford. Walk their actual sequence: what they do first, what they set, what they check, what they hand to the next department. This is not a licence to pad: a department that genuinely has nothing to do still gets one honest sentence and no steps at all.",
+
     "director: blocking, performance beat, eyelines, what each shot is for in the scene, what to tell the cast.",
     "camera: format, lens estimate, movement and rig per shot, exposure, framing marks, how many setups and in what order to shoot them.",
     "lighting_grip: fixtures and modifiers, placement relative to subject and camera, the key-to-fill ratio, rigging, power, and how the light stays consistent across shots.",
@@ -64,6 +66,18 @@ export function segmentSystemPrompt(opts: {
     "vfx: plates, tracking marks, cleanup, CGI, comp order. If the segment is practical, the headline is 'none beyond grade and grain' and steps stay empty. Do not invent VFX work.",
     "sound: only what the frame actually implies — the room, visible practicals, footsteps and cloth, the energy the music would have to carry. If nothing in frame implies sound design, say so.",
     "producer: crew count, hours on set, permits, location and access notes, the budget tier this sits in, and what to cut first when the money runs out.",
+
+    "post_production: the route from rushes to deliverable, and the most valuable field in the document. The departments say what each discipline does; this says what turns footage into THIS shot.",
+
+    "post_production.key_technique: name the single operation that makes the look, plainly, in one sentence. If there is no trick and it is simply well shot, say that outright rather than inventing one.",
+
+    "post_production.in_camera_or_post: THINK ABOUT THIS ONE HARDEST. Say which parts were almost certainly captured on the day and which were made afterwards. Then give the reader the OTHER route: if the look was achieved in camera, say exactly how to reach the same result in post from an ordinary take, and if it was built in post, say how to shoot it practically instead. Someone who cannot get the permit, the filter, the light or the location still needs an answer, and describing only what happened on the day hides it from them. Long-exposure smear, speed changes, day-for-night, split diopters, in-camera transitions, sky replacement, crowd removal and reflections all have both a camera route and a post route. Name both.",
+
+    "post_production.pipeline: ordered from ingest to deliverable. Each entry: `step` is what is being done; `software` names a real application AND a free or cheap equivalent; `how` is the ACTUAL operation — the effect or tool by name, the menu path where it helps, and real values, so the reader can do it without guessing; `why` is what it buys, so they can judge whether to skip it. Write the entries that matter for THIS segment; do not pad the list with 'import your footage'.",
+
+    "post_production.alternatives: other routes to the same result, including the in-camera one when the pipeline is a post route. Say what each gives up.",
+
+    "post_production.pitfalls: what goes wrong in post specifically on this material — banding on flat gradients, ghosting on frame blends, edge tearing on optical flow, key spill, over-grading a plate that still needs comping.",
 
     "shot_list: one line per shot, in order, in the compressed form a shot list uses. Example: '1 / MCU / low angle / slow push-in / ~85mm / dusk side-light / one subject'. Keep each under 120 characters.",
 

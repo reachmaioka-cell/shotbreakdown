@@ -8,6 +8,7 @@ import { formatDuration } from "@/lib/shot-format";
 import {
   DEPARTMENT_LABELS,
   type Department,
+  type SegmentPost,
   type StoredSegmentBreakdown,
 } from "@/lib/validation";
 
@@ -45,7 +46,13 @@ function paragraphs(text: string): string[] {
     .filter(Boolean);
 }
 
-function Prose({ text, className = "" }: { text: string; className?: string }) {
+/*
+ * Exported, along with CopyButton below, so the AI recreation document renders
+ * its prose and copies its prompts through the same code this breakdown uses.
+ * They live here rather than in ui/primitives because they are shaped for these
+ * two documents and nothing else reads them.
+ */
+export function Prose({ text, className = "" }: { text: string; className?: string }) {
   const parts = paragraphs(text);
   if (parts.length === 0) return null;
   return (
@@ -61,6 +68,22 @@ function Prose({ text, className = "" }: { text: string; className?: string }) {
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="eyebrow mb-3">{children}</h3>;
+}
+
+/**
+ * Breakdowns written before the post-production pass existed carry no such key,
+ * and a generation can come back with the shape but nothing in it. Either way
+ * the section renders nothing rather than an empty shell.
+ */
+function hasPost(post: SegmentPost | undefined): post is SegmentPost {
+  if (!post) return false;
+  return (
+    post.key_technique.trim().length > 0 ||
+    post.in_camera_or_post.trim().length > 0 ||
+    post.pipeline.length > 0 ||
+    post.alternatives.length > 0 ||
+    post.pitfalls.length > 0
+  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -149,6 +172,50 @@ export function breakdownToMarkdown(breakdown: StoredSegmentBreakdown): string {
     push();
   }
 
+  const post = breakdown.post_production;
+  if (hasPost(post)) {
+    push("## Post-production");
+    push();
+    if (post.key_technique.trim()) {
+      push(`**${cell(post.key_technique)}**`);
+      push();
+    }
+    if (post.in_camera_or_post.trim()) {
+      push("### In camera or in post");
+      push();
+      for (const part of paragraphs(post.in_camera_or_post)) {
+        push(part);
+        push();
+      }
+    }
+    if (post.pipeline.length > 0) {
+      push("### Pipeline");
+      push();
+      post.pipeline.forEach((entry, i) => {
+        const head = entry.software.trim()
+          ? `${entry.step} — \`${entry.software}\``
+          : entry.step;
+        push(`${i + 1}. **${cell(head)}**`);
+        // Three spaces keeps the continuation inside the numbered item.
+        if (entry.how.trim()) push(`   How: ${cell(entry.how)}`);
+        if (entry.why.trim()) push(`   Why: ${cell(entry.why)}`);
+      });
+      push();
+    }
+    if (post.alternatives.length > 0) {
+      push("### Other routes to the same look");
+      push();
+      for (const item of post.alternatives) push(`- ${item}`);
+      push();
+    }
+    if (post.pitfalls.length > 0) {
+      push("### Watch for in post");
+      push();
+      for (const item of post.pitfalls) push(`- ${item}`);
+      push();
+    }
+  }
+
   if (breakdown.departments.length > 0) {
     push("## Departments");
     push();
@@ -222,7 +289,7 @@ export function breakdownToMarkdown(breakdown: StoredSegmentBreakdown): string {
  * `build` is a thunk so the whole Markdown document is only assembled when the
  * user actually asks for it, not on every render of the page.
  */
-function CopyButton({
+export function CopyButton({
   build,
   label,
   describes,
@@ -304,6 +371,7 @@ export function SegmentBreakdown({
   segmentSeconds?: number | null;
 }) {
   const sequence = breakdown.shot_sequence;
+  const post = breakdown.post_production;
   const showCutNotes = sequence.some((shot) => shot.cut_note.trim().length > 0);
   const thumbs = new Map(shots.map((shot) => [shot.shotIndex, shot]));
 
@@ -588,7 +656,96 @@ export function SegmentBreakdown({
         </section>
       ) : null}
 
-      {/* 5. Departments */}
+      {/* 5. Post-production: the bridge from what was shot to what each
+          discipline does, and the route for a reader who cannot reproduce the
+          conditions on the day. */}
+      {hasPost(post) ? (
+        <section>
+          <SectionTitle>Post-production</SectionTitle>
+          <div className="flex flex-col gap-6">
+            {post.key_technique.trim() ? (
+              <p className="max-w-[52ch] text-[17px] leading-snug text-text-0 md:text-[19px]">
+                {post.key_technique}
+              </p>
+            ) : null}
+
+            {post.in_camera_or_post.trim() ? (
+              <div className="rounded-[3px] border border-line bg-ink-1 p-4">
+                <h4 className="eyebrow mb-2">In camera or in post</h4>
+                <Prose text={post.in_camera_or_post} className="max-w-[72ch]" />
+              </div>
+            ) : null}
+
+            {post.pipeline.length > 0 ? (
+              <div>
+                <h4 className="eyebrow mb-2">Pipeline</h4>
+                <ol className="flex flex-col border-t border-line">
+                  {post.pipeline.map((entry, i) => (
+                    <li key={i} className="flex gap-3 border-b border-line py-3">
+                      <span className="mono shrink-0 pt-0.5 text-[12px] text-text-3">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <div className="flex min-w-0 flex-col gap-1.5">
+                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                          <h5 className="text-[13px] text-text-0">{entry.step}</h5>
+                          {entry.software.trim() ? (
+                            <span className="mono text-[11px] text-text-3">{entry.software}</span>
+                          ) : null}
+                        </div>
+                        {entry.how.trim() ? (
+                          <p className="max-w-[72ch] text-[13px] leading-relaxed text-text-0">
+                            {entry.how}
+                          </p>
+                        ) : null}
+                        {entry.why.trim() ? (
+                          <p className="max-w-[72ch] text-[12px] leading-relaxed text-text-2">
+                            {entry.why}
+                          </p>
+                        ) : null}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+
+            {post.alternatives.length > 0 ? (
+              <div>
+                <h4 className="eyebrow mb-2">Other routes to the same look</h4>
+                <ul className="flex max-w-[72ch] flex-col gap-2">
+                  {post.alternatives.map((item, i) => (
+                    <li key={i} className="flex gap-3 text-[13px] leading-relaxed text-text-1">
+                      <span
+                        aria-hidden
+                        className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-text-3"
+                      />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {post.pitfalls.length > 0 ? (
+              <div>
+                <h4 className="eyebrow mb-2">Watch for in post</h4>
+                <ul className="flex max-w-[72ch] flex-col gap-1.5">
+                  {post.pitfalls.map((item, i) => (
+                    <li
+                      key={i}
+                      className="border-l border-line pl-3 text-[13px] leading-relaxed text-text-2"
+                    >
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {/* 6. Departments */}
       {breakdown.departments.length > 0 ? (
         <section>
           <SectionTitle>Departments</SectionTitle>
@@ -695,7 +852,7 @@ export function SegmentBreakdown({
         </section>
       ) : null}
 
-      {/* 6. Shot list */}
+      {/* 7. Shot list */}
       {breakdown.shot_list.length > 0 ? (
         <section>
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
@@ -722,7 +879,7 @@ export function SegmentBreakdown({
         </section>
       ) : null}
 
-      {/* 7. Prep checklist */}
+      {/* 8. Prep checklist */}
       {breakdown.prep_checklist.length > 0 ? (
         <section>
           <SectionTitle>Prep checklist</SectionTitle>
@@ -737,7 +894,7 @@ export function SegmentBreakdown({
         </section>
       ) : null}
 
-      {/* 8. Budget tiers */}
+      {/* 9. Budget tiers */}
       {tiers.length > 0 ? (
         <section>
           <SectionTitle>What it costs</SectionTitle>
@@ -758,7 +915,7 @@ export function SegmentBreakdown({
         </section>
       ) : null}
 
-      {/* 9. Common mistakes */}
+      {/* 10. Common mistakes */}
       {breakdown.common_mistakes.length > 0 ? (
         <section>
           <SectionTitle>Common mistakes</SectionTitle>

@@ -19,10 +19,12 @@ import { createClient } from "@/lib/supabase/server";
 import {
   DEPARTMENTS,
   ShotMetadataSchema,
+  StoredAiRecreationSchema,
   readSegmentBreakdown,
   type Department,
   type ShotMetadata,
 } from "@/lib/validation";
+import type { AiRecreationStatusValue } from "@/components/segment/ai-recreation";
 import type { BreakdownStatusValue } from "@/components/segment/breakdown-status";
 
 export const dynamic = "force-dynamic";
@@ -74,7 +76,9 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
       `id, user_id, title, status, stage_detail, progress, shot_count, analyzed_shot_count,
        duration_seconds, error_message, source_url, source_type, file_path, visibility, created_at,
        focus, segment_start, segment_end, source_duration_seconds,
-       breakdown, breakdown_status, breakdown_error`
+       breakdown, breakdown_status, breakdown_error,
+       ai_recreation, ai_recreation_status, ai_recreation_error,
+       ai_recreation_prompt_version, ai_recreation_generated_at`
     )
     .eq("id", id)
     .maybeSingle();
@@ -169,6 +173,20 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
   };
 
   const breakdown = readSegmentBreakdown(video.breakdown);
+
+  /*
+   * The generative route is written by its own job, on demand, so it arrives
+   * independently of the breakdown and may be absent, still running, failed, or
+   * written against a shape this build no longer understands. Parse it the way
+   * the breakdown is parsed: a document that will not read is treated as no
+   * document, so a stale row cannot take the page down with it.
+   */
+  const aiParsed = StoredAiRecreationSchema.safeParse(video.ai_recreation);
+  const aiRecreation = aiParsed.success ? aiParsed.data : null;
+  const aiStatus = (video.ai_recreation_status as AiRecreationStatusValue) ?? null;
+  // Same rule as breakdownError: the stored message is the raw provider text,
+  // so it is the owner's to read and nobody else's.
+  const aiError = isOwner ? ((video.ai_recreation_error as string | null) ?? null) : null;
   const openRole = toDepartment((prefsRow.data as { role?: unknown } | null)?.role);
   const profile = profileRow.data as {
     plan?: string | null;
@@ -256,6 +274,10 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
         savedIds={[...saved]}
         isOwner={isOwner}
         breakdown={breakdown}
+        hasBreakdown={breakdown !== null}
+        aiStatus={aiStatus}
+        aiRecreation={aiRecreation}
+        aiError={aiError}
         shotMetadata={shotMetadata}
         openRole={openRole}
       />

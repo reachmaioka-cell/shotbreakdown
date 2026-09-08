@@ -726,6 +726,103 @@ export const SegmentShotSchema = z.object({
   cut_note: z.string(),
 });
 
+/**
+ * The route from rushes to deliverable.
+ *
+ * The department briefs describe what each discipline does. This describes the
+ * thing that turns footage into the shot, which is often not what was done on
+ * the day: a long-exposure smear can be shot at 1/4s with a 10-stop ND, or it
+ * can be frame-blended in post from a normal-shutter take. Someone who cannot
+ * stand on a median at midday with a stack of filters still needs the answer,
+ * and reading the shot only as it was made hides it from them.
+ */
+export const SegmentPostSchema = z.object({
+  /** The one operation that makes this look. Named plainly. */
+  key_technique: z.string(),
+  /**
+   * Which parts were almost certainly captured versus made afterwards, and —
+   * the point of the field — how to reach the same result from the other side.
+   */
+  in_camera_or_post: z.string(),
+  /** Ordered, from ingest to deliverable. */
+  pipeline: z.array(
+    z.object({
+      /** What is being done. "Frame-blend the traffic". */
+      step: z.string(),
+      /** Named application, and the cheap or free equivalent. */
+      software: z.string(),
+      /** The actual operation: effect name, menu path, real values. */
+      how: z.string(),
+      /** What it buys, so a reader can judge whether to skip it. */
+      why: z.string(),
+    })
+  ),
+  /** Other routes to the same result, including the in-camera one. */
+  alternatives: z.array(z.string()),
+  /** Where this goes wrong in post specifically. */
+  pitfalls: z.array(z.string()),
+});
+
+export type SegmentPost = z.infer<typeof SegmentPostSchema>;
+
+export const AI_FEASIBILITY = [
+  "straightforward",
+  "achievable",
+  "difficult",
+  "not-yet",
+] as const;
+
+/**
+ * Recreating the segment with generative tools instead of a camera.
+ *
+ * Generated on demand, never automatically: most people opening a breakdown
+ * want to shoot the thing, and spending a model call on an answer nobody asked
+ * for is the definition of padding. Behind its own button, for the people who
+ * came for exactly this.
+ */
+export const AiRecreationSchema = z.object({
+  feasibility: z.enum(AI_FEASIBILITY),
+  /** Honest paragraph: how close current tools get, and where they fall short. */
+  verdict: z.string(),
+  /** text-to-video, image-to-video, or a hybrid with real plates, and why. */
+  approach: z.string(),
+  tools: z.array(
+    z.object({
+      name: z.string(),
+      /** What this one does in this pipeline, not what it does in general. */
+      role: z.string(),
+    })
+  ),
+  /** Prompts written to be pasted, not described. */
+  prompts: z.array(
+    z.object({
+      /** What this prompt is for: "Shot 0 base plate", "motion pass". */
+      target: z.string(),
+      text: z.string(),
+    })
+  ),
+  /** Ordered steps through the generative pipeline. */
+  workflow: z.array(z.string()),
+  /** Model settings worth setting deliberately, with values. */
+  settings: z.array(z.string()),
+  /** What these tools will get wrong on THIS segment. */
+  hard_parts: z.array(z.string()),
+  /** What still has to be fixed by hand afterwards. */
+  cleanup: z.array(z.string()),
+});
+
+export type AiRecreation = z.infer<typeof AiRecreationSchema>;
+
+export const StoredAiRecreationSchema = AiRecreationSchema.extend({
+  version: z.number(),
+  prompt_version: z.string(),
+  generated_at: z.string(),
+});
+
+export type StoredAiRecreation = z.infer<typeof StoredAiRecreationSchema>;
+
+export const AI_RECREATION_VERSION = 1;
+
 export const SegmentBreakdownSchema = z.object({
   title: z.string(),
   what_happens: z.string(),
@@ -735,6 +832,7 @@ export const SegmentBreakdownSchema = z.object({
   focus_answer: z.string(),
   shot_sequence: z.array(SegmentShotSchema),
   departments: z.array(DepartmentBriefSchema),
+  post_production: SegmentPostSchema,
   shot_list: z.array(z.string()),
   prep_checklist: z.array(z.string()),
   minimum_crew: z.string(),
@@ -751,6 +849,12 @@ export type SegmentBreakdown = z.infer<typeof SegmentBreakdownSchema>;
 
 /** As stored on videos.breakdown. */
 export const StoredSegmentBreakdownSchema = SegmentBreakdownSchema.extend({
+  /**
+   * Optional on read, required on generation. Breakdowns written before the
+   * post-production pass existed have no such key, and refusing to parse them
+   * would blank a breakdown the user already has.
+   */
+  post_production: SegmentPostSchema.optional(),
   version: z.number(),
   prompt_version: z.string(),
   /** The question this breakdown was written against, so a refocus is visible. */
@@ -845,6 +949,26 @@ export function normalizeSegmentBreakdown(
       full_production: cleanList(raw.budget_tiers?.full_production, 10),
     },
     common_mistakes: cleanList(raw.common_mistakes, 6),
+    post_production: normalizeSegmentPost(raw.post_production),
+  };
+}
+
+/** Absent or partial post sections still render; they just render as empty. */
+export function normalizeSegmentPost(raw: SegmentPost | undefined | null): SegmentPost {
+  return {
+    key_technique: (raw?.key_technique ?? "").trim().slice(0, 400),
+    in_camera_or_post: (raw?.in_camera_or_post ?? "").trim().slice(0, 1200),
+    pipeline: (raw?.pipeline ?? [])
+      .map((entry) => ({
+        step: (entry?.step ?? "").trim().slice(0, 200),
+        software: (entry?.software ?? "").trim().slice(0, 200),
+        how: (entry?.how ?? "").trim().slice(0, 700),
+        why: (entry?.why ?? "").trim().slice(0, 400),
+      }))
+      .filter((entry) => entry.step || entry.how)
+      .slice(0, 14),
+    alternatives: cleanList(raw?.alternatives, 6),
+    pitfalls: cleanList(raw?.pitfalls, 6),
   };
 }
 

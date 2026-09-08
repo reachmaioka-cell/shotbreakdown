@@ -37,7 +37,7 @@ export class SegmentBreakdownError extends Error {
 
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
-type ImageBlock = {
+export type ImageBlock = {
   type: "image";
   source: {
     type: "base64";
@@ -46,7 +46,8 @@ type ImageBlock = {
   };
 };
 
-function toImageBlock(buffer: Buffer, contentType: string): ImageBlock {
+/** Exported so the AI-recreation generator sends frames the same way. */
+export function toImageBlock(buffer: Buffer, contentType: string): ImageBlock {
   const mime = IMAGE_TYPES.has(contentType) ? contentType : "image/jpeg";
   return {
     type: "image",
@@ -99,8 +100,12 @@ export function shotTimecode(startSeconds: number, endSeconds: number): string {
  *
  * Sending the whole record for thirty shots wastes thousands of tokens on
  * fields nobody reads at this altitude (hex colours, embeddings, tag lists).
+ *
+ * Exported because the AI-recreation pass reads the same records. A second copy
+ * would drift the moment either prompt learned something about what a
+ * department actually needs.
  */
-function compactRecord(shot: SegmentShotInput): string {
+export function compactRecord(shot: SegmentShotInput): string {
   const m = shot.metadata;
   const parts: Record<string, unknown> = {
     shot: shot.shotIndex,

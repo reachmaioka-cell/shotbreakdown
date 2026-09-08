@@ -12,6 +12,40 @@ const nextConfig: NextConfig = {
     "@ffprobe-installer/ffprobe",
     "fluent-ffmpeg",
   ],
+  /*
+   * Hardening headers. None of these were set, and two of them matter for this
+   * product specifically.
+   *
+   * Referrer-Policy protects share tokens: a share link IS the secret, it sits
+   * in the path at /s/<token>, and any sub-resource or link that leaves the page
+   * would otherwise carry it to a third party in the Referer header.
+   *
+   * X-Frame-Options stops the app being framed. It holds destructive one-click
+   * actions — delete a segment, delete an account, flip a share to public — and
+   * nothing here is meant to be embedded in someone else's page.
+   *
+   * HSTS is production-only on purpose: sending it from a local http server
+   * pins the browser to https for localhost and breaks every other local
+   * project on the same host.
+   */
+  async headers() {
+    const base = [
+      { key: "X-Frame-Options", value: "DENY" },
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      {
+        key: "Permissions-Policy",
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+      },
+    ];
+    if (process.env.NODE_ENV === "production") {
+      base.push({
+        key: "Strict-Transport-Security",
+        value: "max-age=63072000; includeSubDomains; preload",
+      });
+    }
+    return [{ source: "/:path*", headers: base }];
+  },
   images: {
     /*
      * Next 16's image optimizer refuses any upstream that resolves to a private

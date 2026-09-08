@@ -55,3 +55,6 @@ next-env.d.ts
 
 # local screenshots
 .cursor-screenshots/
+
+# agent scratch
+.rvscratch/

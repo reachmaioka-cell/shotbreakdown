@@ -33,6 +33,11 @@ export const RATE_LIMITS = {
    * this budget: only a deliberate refocus does.
    */
   segment_breakdown: { limit: 10, windowSeconds: 24 * 60 * 60 },
+  /**
+   * The generative route to the same segment, asked for by hand. Nothing writes
+   * it automatically, so every call here is a model call somebody chose to make.
+   */
+  ai_recreation: { limit: 10, windowSeconds: 24 * 60 * 60 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitBucket = keyof typeof RATE_LIMITS;

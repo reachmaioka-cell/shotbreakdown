@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AddToCollection } from "@/components/add-to-collection";
 import { SaveButton } from "@/components/save-button";
+import { AiRecreation, type AiRecreationStatusValue } from "@/components/segment/ai-recreation";
 import { BreakdownStatus, type BreakdownStatusValue } from "@/components/segment/breakdown-status";
 import { SegmentAsk } from "@/components/segment/segment-ask";
 import {
@@ -16,7 +17,12 @@ import { ShotMetadataPanel } from "@/components/shot-metadata";
 import { Button, Tabs } from "@/components/ui/primitives";
 import { humanize } from "@/lib/filters";
 import { formatDuration, formatTimecode, shotHref, type ShotCard } from "@/lib/shot-format";
-import type { Department, ShotMetadata, StoredSegmentBreakdown } from "@/lib/validation";
+import type {
+  Department,
+  ShotMetadata,
+  StoredAiRecreation,
+  StoredSegmentBreakdown,
+} from "@/lib/validation";
 
 export type VideoState = {
   id: string;
@@ -104,6 +110,10 @@ export function VideoWorkspace({
   breakdown,
   shotMetadata,
   openRole = null,
+  hasBreakdown,
+  aiRecreation = null,
+  aiStatus = null,
+  aiError = null,
 }: {
   video: VideoState;
   shots: ShotCard[];
@@ -115,6 +125,20 @@ export function VideoWorkspace({
   shotMetadata: Record<string, ShotMetadata>;
   /** The department the reader works in, opened first in the breakdown. */
   openRole?: Department | null;
+  /**
+   * Whether a breakdown exists at all. The AI route is written from it, so the
+   * button stays disabled until there is one. Falls back to the breakdown prop.
+   */
+  hasBreakdown?: boolean;
+  /*
+   * The AI route, parsed by the page. Optional and null by default: with
+   * nothing passed the owner still gets the button, and the poll that follows
+   * pressing it brings the document back.
+   */
+  aiRecreation?: StoredAiRecreation | null;
+  aiStatus?: AiRecreationStatusValue;
+  /** Owner-only, like breakdownError: the raw pipeline message. */
+  aiError?: string | null;
 }) {
   const router = useRouter();
   const [video, setVideo] = useState(initialVideo);
@@ -701,6 +725,23 @@ export function VideoWorkspace({
             No breakdown has been written for this segment yet.
           </p>
         )}
+
+        {/*
+          Last in the region, after the camera answer: the reader meets how the
+          segment was actually made before they are offered the generative route.
+          Held back while the segment is still processing or has failed, where
+          the panels above are already the whole story.
+        */}
+        {!active && video.status !== "failed" ? (
+          <AiRecreation
+            videoId={video.id}
+            status={aiStatus}
+            recreation={aiRecreation}
+            error={aiError}
+            isOwner={isOwner}
+            hasBreakdown={hasBreakdown ?? breakdown !== null}
+          />
+        ) : null}
 
         {shots.length > 0 ? (
           <div className="mt-10">

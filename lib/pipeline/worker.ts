@@ -12,6 +12,7 @@ import {
   PipelineError,
   runAnalyzeShots,
   runFinalizeVideo,
+  runGenerateAiRecreation,
   runGenerateRecreationGuide,
   runGenerateSegmentBreakdown,
   runIngestVideo,
@@ -33,6 +34,7 @@ export type WorkerReport = {
 const DERIVED_JOB_TYPES = new Set<string>([
   "generate_recreation_guide",
   "generate_segment_breakdown",
+  "generate_ai_recreation",
 ]);
 
 async function runJob(job: ProcessingJob): Promise<Record<string, unknown>> {
@@ -49,6 +51,8 @@ async function runJob(job: ProcessingJob): Promise<Record<string, unknown>> {
       return runGenerateRecreationGuide(job);
     case "generate_segment_breakdown":
       return runGenerateSegmentBreakdown(job);
+    case "generate_ai_recreation":
+      return runGenerateAiRecreation(job);
     default:
       throw new PipelineError(`Unknown job type ${job.job_type}`, "unknown_job", false);
   }
@@ -108,6 +112,14 @@ export async function runWorkerTick(batchSize = 2): Promise<WorkerReport> {
         await createAdminClient()
           .from("videos")
           .update({ breakdown_status: "failed", breakdown_error: message.slice(0, 500) })
+          .eq("id", job.video_id);
+      }
+      // Same shape: the button the user pressed has to come back with an
+      // answer or an explanation, never stay pending forever.
+      if (terminal && job.job_type === "generate_ai_recreation" && job.video_id) {
+        await createAdminClient()
+          .from("videos")
+          .update({ ai_recreation_status: "failed", ai_recreation_error: message.slice(0, 500) })
           .eq("id", job.video_id);
       }
       report.failed += 1;

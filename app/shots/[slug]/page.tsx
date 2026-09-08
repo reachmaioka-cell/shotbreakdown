@@ -283,13 +283,13 @@ export default async function ShotPage({ params }: { params: Params }) {
                 */}
                 {shot.video.hasBreakdown ? (
                   <ul className="mt-2.5 flex flex-col gap-1 border-t border-line pt-2.5">
-                    {shot.video.hasPostProduction ? (
+                    {shot.video.hasTechnique ? (
                       <li>
                         <Link
-                          href={`/videos/${shot.videoId}#post-production`}
+                          href={`/videos/${shot.videoId}#how-it-was-made`}
                           className="text-[12px] text-accent hover:underline"
                         >
-                          How it was done, and how to do it in post
+                          How it was made, in camera and in post
                         </Link>
                       </li>
                     ) : null}

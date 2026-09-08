@@ -31,8 +31,8 @@ export type ShotOverlayShot = {
   videoTitle: string | null;
   /** Whether the parent segment has a breakdown worth linking into. */
   hasBreakdown?: boolean;
-  /** And whether that breakdown carries a post-production section specifically. */
-  hasPostProduction?: boolean;
+  /** And whether that breakdown says how it was made, with the routes back to it. */
+  hasTechnique?: boolean;
 };
 
 export type ShotOverlayFrame = {
@@ -342,13 +342,13 @@ export function ShotOverlay({
                           should land on the answer, not on the player above it.
                         */}
                         <ul className="mt-2 flex flex-col gap-1">
-                          {shot.hasPostProduction ? (
+                          {shot.hasTechnique ? (
                             <li>
                               <Link
-                                href={`/videos/${shot.videoId}#post-production`}
+                                href={`/videos/${shot.videoId}#how-it-was-made`}
                                 className="text-[13px] text-accent hover:underline"
                               >
-                                How it was done, and how to do it in post
+                                How it was made, in camera and in post
                               </Link>
                             </li>
                           ) : null}

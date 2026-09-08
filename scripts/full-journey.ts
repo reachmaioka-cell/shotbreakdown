@@ -44,6 +44,15 @@ function check(name: string, ok: boolean, detail?: unknown) {
   }
 }
 
+function unescapeHtml(text: string): string {
+  return text
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
 class Session {
   private cookies = new Map<string, string>();
   private absorb(res: Response) {
@@ -207,6 +216,16 @@ async function main() {
         breakdown.shot_sequence.length === (video?.shot_count ?? 0),
         { entries: breakdown.shot_sequence.length, shots: video?.shot_count }
       );
+      const technique = breakdown.technique;
+      check("the technique is named", !!technique?.name.trim(), { name: technique?.name });
+      check("it carries at least one route back to the look", (technique?.routes.length ?? 0) >= 1, {
+        routes: technique?.routes.map((r) => r.name),
+      });
+      check(
+        "the first route is a complete recipe (three or more steps)",
+        (technique?.routes[0]?.steps.length ?? 0) >= 3,
+        { steps: technique?.routes[0]?.steps.length ?? 0 }
+      );
       check("it answers the question that was asked", breakdown.focus_answer.trim().length > 80, {
         length: breakdown.focus_answer.trim().length,
       });
@@ -215,17 +234,28 @@ async function main() {
         /shot\s*\d|0:\d\d/i.test(breakdown.focus_answer),
         breakdown.focus_answer.slice(0, 120)
       );
-      console.log(`\n  title:   ${breakdown.title}`);
-      console.log(`  crew:    ${breakdown.minimum_crew}`);
-      console.log(`  asked:   ${FOCUS}`);
-      console.log(`  answer:  ${breakdown.focus_answer.slice(0, 260)}…`);
+      console.log(`\n  title:      ${breakdown.title}`);
+      console.log(`  difficulty: ${breakdown.difficulty}   crew: ${breakdown.crew ?? "(none)"}`);
+      console.log(`  technique:  ${technique?.name ?? "(none)"}`);
+      for (const route of technique?.routes ?? []) {
+        console.log(`    - ${route.name} (${route.steps.length} steps)`);
+      }
+      console.log(`  asked:      ${FOCUS}`);
+      console.log(`  answer:     ${breakdown.focus_answer.slice(0, 260)}…`);
     }
 
     step("5. The pages a user actually sees");
     const segmentPage = await session.fetch(`/videos/${videoId}`);
-    const html = await segmentPage.text();
+    // React escapes quotes and ampersands in text it renders, so a title or a
+    // technique name is looked for as it was written, not as it was encoded.
+    const html = unescapeHtml(await segmentPage.text());
     check("the segment page renders", segmentPage.status === 200, { status: segmentPage.status });
     check("it shows the breakdown title", !!breakdown && html.includes(breakdown.title.slice(0, 30)));
+    check(
+      "it names the technique",
+      !!breakdown?.technique && html.includes(breakdown.technique.name.slice(0, 30)),
+      { technique: breakdown?.technique?.name }
+    );
     const shownDepartments = DEPARTMENTS.filter((d) => html.includes(DEPARTMENT_LABELS[d]));
     check(
       `it renders all nine department briefs (found ${shownDepartments.length})`,

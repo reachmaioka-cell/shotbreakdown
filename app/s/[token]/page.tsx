@@ -99,7 +99,7 @@ export default async function SharePage({ params }: { params: Params }) {
         <main id="main" className="flex-1 w-full mx-auto max-w-[1400px] px-4 sm:px-6 py-8">
           <p className="eyebrow mb-1">Segment breakdown</p>
           <h1 className="text-[22px] font-medium text-text-0">
-            {breakdown?.title ?? video.title ?? "Untitled segment"}
+            {video.title ?? "Untitled segment"}
           </h1>
           <p className="mt-1.5 mb-6 text-[12px] text-text-3">
             {shots.length} shot{shots.length === 1 ? "" : "s"}

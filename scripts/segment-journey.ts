@@ -13,7 +13,13 @@
  *   npx tsx --env-file=.env.local scripts/segment-journey.ts [baseUrl]
  */
 import { createAdminClient } from "../lib/supabase/admin";
-import { DEPARTMENTS, SEGMENT_BREAKDOWN_VERSION } from "../lib/validation";
+import { SEGMENT_PROMPT_VERSION } from "../lib/prompts/segment";
+import {
+  DEPARTMENTS,
+  SEGMENT_BREAKDOWN_VERSION,
+  readSegmentBreakdown,
+  type StoredSegmentBreakdown,
+} from "../lib/validation";
 import { planLimits } from "../lib/plans";
 
 const BASE = process.argv[2] ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://127.0.0.1:3002";
@@ -255,16 +261,33 @@ async function main() {
     );
 
     step("6. Write a breakdown and read it back");
-    const breakdown = {
+    // Typed as the stored document on purpose: if the shape moves again, this
+    // seed stops compiling instead of quietly seeding a row the page cannot read.
+    const breakdown: StoredSegmentBreakdown = {
       version: SEGMENT_BREAKDOWN_VERSION,
-      prompt_version: "segment-v1",
+      prompt_version: SEGMENT_PROMPT_VERSION,
       focus: "How was the key light done?",
       generated_at: new Date().toISOString(),
       title: "Kitchen argument, two-shot coverage",
-      what_happens: "Two people argue across a kitchen counter.",
-      setting: "A small domestic kitchen at night.",
-      approach: "Two setups, shot-reverse, cut on the turn.",
+      what_happens: "Two people argue across the counter of a small domestic kitchen at night.",
       focus_answer: "A single soft source camera-left, bounced off the ceiling.",
+      technique: {
+        name: "Shot-reverse coverage under one bounced source; no trick.",
+        evidence:
+          "The key wraps the same way and the shadows fall to the same side in both shots, so one source served both setups.",
+        routes: [
+          {
+            name: "In camera: one bounced source, two setups",
+            when: "You have one light and a white ceiling.",
+            steps: [
+              "Rig one 1K tungsten [or a 100W LED panel] camera-left, aimed at the ceiling above the counter.",
+              "Shoot shot 1 on the MCU, then turn around for shot 2 without moving the light.",
+              "Cut on the turn so the eyelines cross the counter.",
+            ],
+            gives_up: "",
+          },
+        ],
+      },
       shot_sequence: [0, 1].map((i) => ({
         shot_index: i,
         timecode: `0:0${i * 6}-0:${(i + 1) * 6}`,
@@ -276,38 +299,48 @@ async function main() {
         role,
         headline: `${role} headline.`,
         steps: role === "camera" ? ["Lock off on sticks."] : [],
-        gear: [],
         pitfalls: [],
       })),
-      shot_list: ["1 / MCU / eye level / static", "2 / MCU / eye level / static"],
-      prep_checklist: ["Bounce board rigged."],
-      minimum_crew: "3",
-      difficulty: "moderate" as const,
-      budget_tiers: { under_500_usd: ["Practicals"], under_5000_usd: [], full_production: [] },
-      common_mistakes: ["Letting the bounce spill onto the background."],
+      difficulty: "moderate",
+      crew: "4: operator, gaffer, two performers.",
+      kit: {
+        minimum: "A phone on a tripod and a bounce board; loses the soft wrap.",
+        full: "Mirrorless body, 35mm and 50mm primes, one 1K with a bounce.",
+      },
     };
     const { error: writeError } = await admin
       .from("videos")
       .update({
         breakdown,
         breakdown_status: "ready",
-        breakdown_prompt_version: "segment-v1",
+        breakdown_prompt_version: SEGMENT_PROMPT_VERSION,
         breakdown_generated_at: breakdown.generated_at,
       })
       .eq("id", videoId);
     if (writeError) throw new Error(`write breakdown: ${writeError.message}`);
 
-    const ready = await json<{
-      status?: string;
-      breakdown?: { departments?: unknown[]; focus_answer?: string } | null;
-    }>(await owner.fetch(`/api/videos/${videoId}/breakdown`));
-    check("owner sees status 'ready'", ready.status === "ready", { status: ready.status });
-    check(
-      "all nine departments come back",
-      ready.breakdown?.departments?.length === DEPARTMENTS.length,
-      { got: ready.breakdown?.departments?.length }
+    const ready = await json<{ status?: string; breakdown?: unknown }>(
+      await owner.fetch(`/api/videos/${videoId}/breakdown`)
     );
-    check("the focus answer survives the round trip", !!ready.breakdown?.focus_answer);
+    check("owner sees status 'ready'", ready.status === "ready", { status: ready.status });
+    const readBack = readSegmentBreakdown(ready.breakdown);
+    check("the breakdown parses against the stored schema", !!readBack);
+    check(
+      "all nine departments come back, in canonical order",
+      readBack?.departments.map((d) => d.role).join(",") === DEPARTMENTS.join(","),
+      { got: readBack?.departments.map((d) => d.role) }
+    );
+    check("the focus answer survives the round trip", !!readBack?.focus_answer);
+    const technique = readBack?.technique;
+    check("the technique is named", !!technique?.name.trim(), { name: technique?.name });
+    check("it carries at least one route", (technique?.routes.length ?? 0) >= 1, {
+      routes: technique?.routes.map((r) => r.name),
+    });
+    check(
+      "the first route is a complete recipe (three or more steps)",
+      (technique?.routes[0]?.steps.length ?? 0) >= 3,
+      { steps: technique?.routes[0]?.steps.length ?? 0 }
+    );
 
     step("7. The status endpoint carries the segment fields");
     const status = await json<{
@@ -430,12 +463,17 @@ async function main() {
     );
     if (exported.ok) {
       const text = await exported.text();
-      const parsed = JSON.parse(text) as { breakdown?: { departments?: unknown[] } };
+      const parsed = JSON.parse(text) as {
+        breakdown?: { departments?: unknown[]; technique?: { name?: string } };
+      };
       check(
         "the JSON export includes the breakdown",
         (parsed.breakdown?.departments?.length ?? 0) === DEPARTMENTS.length,
         { got: parsed.breakdown?.departments?.length }
       );
+      check("the export carries the technique", !!parsed.breakdown?.technique?.name, {
+        technique: parsed.breakdown?.technique,
+      });
     } else {
       check("the JSON export includes the breakdown", false, { status: exported.status });
     }

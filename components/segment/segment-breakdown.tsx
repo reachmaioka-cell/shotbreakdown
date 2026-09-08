@@ -4,12 +4,12 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { Pill } from "@/components/ui/primitives";
 import { humanize } from "@/lib/filters";
-import { formatDuration } from "@/lib/shot-format";
 import {
   DEPARTMENT_LABELS,
   type Department,
-  type SegmentPost,
   type StoredSegmentBreakdown,
+  type Technique,
+  type TechniqueRoute,
 } from "@/lib/validation";
 
 /**
@@ -32,11 +32,14 @@ export type SegmentBreakdownShot = {
  * paint. Everything the user reads comes from `breakdown` and `shots`.
  */
 
-const TIER_LABELS = {
-  under_500_usd: "Under $500",
-  under_5000_usd: "Under $5,000",
-  full_production: "Full production",
-} as const;
+/**
+ * Shown in the technique's place for a row written before the technique spine
+ * existed. The retired sections that row still carries are not rendered: they
+ * are the repetition the spine replaced, and showing them would put the old
+ * document back on screen for exactly the rows least worth reading.
+ */
+const LEGACY_NOTE =
+  "This breakdown predates the technique section. Regenerate it from Ask something else to get how it was made.";
 
 /** The model writes multi-paragraph prose separated by blank lines. */
 function paragraphs(text: string): string[] {
@@ -71,18 +74,16 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Breakdowns written before the post-production pass existed carry no such key,
- * and a generation can come back with the shape but nothing in it. Either way
- * the section renders nothing rather than an empty shell.
+ * A row from before the spine has no technique at all, and a generation can
+ * come back with the key and nothing under it. Both mean there is nothing here
+ * to read, and the same answer — regenerate — fits both.
  */
-function hasPost(post: SegmentPost | undefined): post is SegmentPost {
-  if (!post) return false;
+function hasTechnique(technique: Technique | undefined): technique is Technique {
+  if (!technique) return false;
   return (
-    post.key_technique.trim().length > 0 ||
-    post.in_camera_or_post.trim().length > 0 ||
-    post.pipeline.length > 0 ||
-    post.alternatives.length > 0 ||
-    post.pitfalls.length > 0
+    technique.name.trim().length > 0 ||
+    technique.evidence.trim().length > 0 ||
+    technique.routes.length > 0
   );
 }
 
@@ -103,55 +104,80 @@ function displayNumber(shotIndex: number): number {
 export function breakdownToMarkdown(breakdown: StoredSegmentBreakdown): string {
   const out: string[] = [];
   const push = (line = "") => out.push(line);
+  const prose = (text: string) => {
+    for (const part of paragraphs(text)) {
+      push(part);
+      push();
+    }
+  };
 
   push(`# ${breakdown.title}`);
   push();
-
-  const facts = [
-    `Difficulty: ${humanize(breakdown.difficulty)}`,
-    breakdown.minimum_crew ? `Minimum crew: ${breakdown.minimum_crew}` : null,
-    `Shots: ${breakdown.shot_sequence.length}`,
-  ].filter(Boolean);
-  if (facts.length > 0) {
-    push(facts.join(" · "));
-    push();
-  }
+  prose(breakdown.what_happens);
+  push(`Difficulty: ${humanize(breakdown.difficulty)}`);
+  push();
 
   if (breakdown.focus_answer.trim()) {
-    push("## The question you asked");
+    push(`## ${breakdown.focus?.trim() ? cell(breakdown.focus) : "The question you asked"}`);
     push();
-    if (breakdown.focus?.trim()) {
-      push(`> ${cell(breakdown.focus)}`);
+    prose(breakdown.focus_answer);
+  }
+
+  push("## How it was made");
+  push();
+  const technique = breakdown.technique;
+  if (hasTechnique(technique)) {
+    if (technique.name.trim()) {
+      push(`**${cell(technique.name)}**`);
       push();
     }
-    for (const part of paragraphs(breakdown.focus_answer)) {
-      push(part);
+    prose(technique.evidence);
+    for (const route of technique.routes) {
+      push(`### ${cell(route.name)}`);
       push();
+      if (route.when.trim()) {
+        push(`When: ${cell(route.when)}`);
+        push();
+      }
+      if (route.steps.length > 0) {
+        route.steps.forEach((step, i) => push(`${i + 1}. ${cell(step)}`));
+        push();
+      }
+      if (route.gives_up.trim()) {
+        push(`Gives up: ${cell(route.gives_up)}`);
+        push();
+      }
+    }
+  } else {
+    push(LEGACY_NOTE);
+    push();
+  }
+
+  if (breakdown.departments.length > 0) {
+    push("## Departments");
+    push();
+    for (const dept of breakdown.departments) {
+      push(`### ${DEPARTMENT_LABELS[dept.role]}`);
+      push();
+      if (dept.headline.trim()) {
+        push(dept.headline);
+        push();
+      }
+      if (dept.steps.length > 0) {
+        dept.steps.forEach((step, i) => push(`${i + 1}. ${cell(step)}`));
+        push();
+      }
+      if (dept.pitfalls.length > 0) {
+        push("**Watch for**");
+        push();
+        for (const pitfall of dept.pitfalls) push(`- ${cell(pitfall)}`);
+        push();
+      }
     }
   }
 
-  if (breakdown.what_happens.trim()) {
-    push("## What happens");
-    push();
-    for (const part of paragraphs(breakdown.what_happens)) {
-      push(part);
-      push();
-    }
-  }
-  if (breakdown.setting.trim()) {
-    push(`**Setting.** ${breakdown.setting}`);
-    push();
-  }
-  if (breakdown.approach.trim()) {
-    push("## Approach");
-    push();
-    for (const part of paragraphs(breakdown.approach)) {
-      push(part);
-      push();
-    }
-  }
-
-  if (breakdown.shot_sequence.length > 0) {
+  // One shot has no sequence; the read already said what happens in it.
+  if (breakdown.shot_sequence.length > 1) {
     const withCuts = breakdown.shot_sequence.some((s) => s.cut_note.trim());
     push("## Shot sequence");
     push();
@@ -172,123 +198,15 @@ export function breakdownToMarkdown(breakdown: StoredSegmentBreakdown): string {
     push();
   }
 
-  const post = breakdown.post_production;
-  if (hasPost(post)) {
-    push("## Post-production");
+  const kit = [
+    breakdown.kit?.minimum.trim() ? `Minimum: ${cell(breakdown.kit.minimum)}` : null,
+    breakdown.kit?.full.trim() ? `Full: ${cell(breakdown.kit.full)}` : null,
+    breakdown.crew?.trim() ? `Crew: ${cell(breakdown.crew)}` : null,
+  ].filter((line): line is string => line !== null);
+  if (kit.length > 0) {
+    push("## Kit");
     push();
-    if (post.key_technique.trim()) {
-      push(`**${cell(post.key_technique)}**`);
-      push();
-    }
-    if (post.in_camera_or_post.trim()) {
-      push("### In camera or in post");
-      push();
-      for (const part of paragraphs(post.in_camera_or_post)) {
-        push(part);
-        push();
-      }
-    }
-    if (post.pipeline.length > 0) {
-      push("### Pipeline");
-      push();
-      post.pipeline.forEach((entry, i) => {
-        const head = entry.software.trim()
-          ? `${entry.step} — \`${entry.software}\``
-          : entry.step;
-        const marker = `${i + 1}. `;
-        /*
-         * The continuation has to clear the marker, which is four characters
-         * from the tenth step on, and it needs the blank line: without one the
-         * "how" is a lazy continuation and every renderer folds it into the
-         * step heading as a single run-on paragraph — burying the line that
-         * carries the real values.
-         */
-        const indent = " ".repeat(marker.length);
-        push(`${marker}**${cell(head)}**`);
-        if (entry.how.trim()) {
-          push();
-          push(`${indent}How: ${cell(entry.how)}`);
-        }
-        if (entry.why.trim()) {
-          push();
-          push(`${indent}Why: ${cell(entry.why)}`);
-        }
-      });
-      push();
-    }
-    if (post.alternatives.length > 0) {
-      push("### Other routes to the same look");
-      push();
-      for (const item of post.alternatives) push(`- ${item}`);
-      push();
-    }
-    if (post.pitfalls.length > 0) {
-      push("### Watch for in post");
-      push();
-      for (const item of post.pitfalls) push(`- ${item}`);
-      push();
-    }
-  }
-
-  if (breakdown.departments.length > 0) {
-    push("## Departments");
-    push();
-    for (const dept of breakdown.departments) {
-      push(`### ${DEPARTMENT_LABELS[dept.role]}`);
-      push();
-      if (dept.headline) {
-        push(dept.headline);
-        push();
-      }
-      if (dept.steps.length > 0) {
-        dept.steps.forEach((step, i) => push(`${i + 1}. ${step}`));
-        push();
-      }
-      if (dept.gear.length > 0) {
-        push(`**Gear.** ${dept.gear.join("; ")}`);
-        push();
-      }
-      if (dept.pitfalls.length > 0) {
-        push("**Watch for**");
-        push();
-        for (const pitfall of dept.pitfalls) push(`- ${pitfall}`);
-        push();
-      }
-    }
-  }
-
-  if (breakdown.shot_list.length > 0) {
-    push("## Shot list");
-    push();
-    breakdown.shot_list.forEach((line, i) => push(`${i + 1}. ${line}`));
-    push();
-  }
-
-  if (breakdown.prep_checklist.length > 0) {
-    push("## Prep checklist");
-    push();
-    for (const item of breakdown.prep_checklist) push(`- [ ] ${item}`);
-    push();
-  }
-
-  const tiers = (Object.keys(TIER_LABELS) as (keyof typeof TIER_LABELS)[]).filter(
-    (key) => breakdown.budget_tiers[key].length > 0
-  );
-  if (tiers.length > 0) {
-    push("## Budget");
-    push();
-    for (const key of tiers) {
-      push(`### ${TIER_LABELS[key]}`);
-      push();
-      for (const item of breakdown.budget_tiers[key]) push(`- ${item}`);
-      push();
-    }
-  }
-
-  if (breakdown.common_mistakes.length > 0) {
-    push("## Common mistakes");
-    push();
-    for (const item of breakdown.common_mistakes) push(`- ${item}`);
+    for (const line of kit) push(`- ${line}`);
     push();
   }
 
@@ -358,6 +276,132 @@ export function CopyButton({
 }
 
 /* ------------------------------------------------------------------ *
+ * Pieces of the document
+ * ------------------------------------------------------------------ */
+
+/** Numbered, imperative, the same shape wherever the document gives steps. */
+function Steps({ steps }: { steps: string[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <ol className="flex max-w-[72ch] flex-col gap-2">
+      {steps.map((step, i) => (
+        <li key={i} className="flex gap-3">
+          <span className="mono shrink-0 text-[12px] leading-relaxed text-text-3">
+            {String(i + 1).padStart(2, "0")}
+          </span>
+          <span className="text-[13px] leading-relaxed text-text-1">{step}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * <details> does the opening, the keyboard handling and the focus ring on its
+ * own. React keeps `open` because a department can be opened from outside
+ * (openRole), and the summary carries aria-expanded because not every reader
+ * exposes a summary's state without it.
+ */
+function Disclosure({
+  open,
+  onOpenChange,
+  summary,
+  children,
+  className = "",
+  summaryClassName = "",
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  summary: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  summaryClassName?: string;
+}) {
+  return (
+    <details
+      open={open}
+      onToggle={(event) => {
+        // Read the element NOW: React nulls event.currentTarget the moment the
+        // handler returns, and the parent may hand this to a state updater
+        // that StrictMode re-invokes during render.
+        const next = event.currentTarget.open;
+        if (next !== open) onOpenChange(next);
+      }}
+      className={className}
+    >
+      <summary
+        aria-expanded={open}
+        className={`flex cursor-pointer list-none items-baseline gap-3 ${summaryClassName}`.trim()}
+      >
+        {summary}
+        <span aria-hidden className="mono shrink-0 text-[13px] text-text-3">
+          {open ? "−" : "+"}
+        </span>
+      </summary>
+      {children}
+    </details>
+  );
+}
+
+function RouteBody({ route }: { route: TechniqueRoute }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <Steps steps={route.steps} />
+      {route.gives_up.trim() ? (
+        <p className="max-w-[72ch] text-[12px] leading-relaxed text-text-2">
+          <span className="text-text-3">Gives up: </span>
+          {route.gives_up}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The route that was actually used: open, because it is the answer. */
+function RouteCard({ route }: { route: TechniqueRoute }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-[3px] border border-line bg-ink-1 p-4">
+      <div className="flex flex-col gap-1">
+        <h4 className="text-[13px] text-text-0">{route.name}</h4>
+        {route.when.trim() ? (
+          <p className="max-w-[72ch] text-[12px] leading-relaxed text-text-2">{route.when}</p>
+        ) : null}
+      </div>
+      <RouteBody route={route} />
+    </div>
+  );
+}
+
+/** Another way to the same look, shut until the reader wants it. */
+function RouteDisclosure({ route }: { route: TechniqueRoute }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Disclosure
+      open={open}
+      onOpenChange={setOpen}
+      className="rounded-[3px] border border-line"
+      summaryClassName="p-4"
+      summary={
+        <span className="flex min-w-0 flex-1 flex-col gap-1 md:flex-row md:items-baseline md:gap-3">
+          <span className="shrink-0 text-[13px] text-text-0">{route.name}</span>
+          {route.when.trim() ? (
+            <span
+              className={`min-w-0 text-[12px] leading-relaxed text-text-2 ${open ? "" : "line-clamp-1"}`.trim()}
+            >
+              {route.when}
+            </span>
+          ) : null}
+        </span>
+      }
+    >
+      <div className="px-4 pb-4">
+        <RouteBody route={route} />
+      </div>
+    </Disclosure>
+  );
+}
+
+/* ------------------------------------------------------------------ *
  * The breakdown
  * ------------------------------------------------------------------ */
 
@@ -375,30 +419,24 @@ export function SegmentBreakdown({
   breakdown,
   shots,
   openRole = null,
-  segmentSeconds = null,
 }: {
   breakdown: StoredSegmentBreakdown;
   shots: SegmentBreakdownShot[];
-  /** Which department disclosure starts open. Falls back to camera. */
+  /** Which department disclosure starts open. None when not given. */
   openRole?: Department | null;
-  /** Segment length in seconds, when the page knows it. Never invented here. */
-  segmentSeconds?: number | null;
 }) {
   const sequence = breakdown.shot_sequence;
-  const post = breakdown.post_production;
+  const technique = breakdown.technique;
   const showCutNotes = sequence.some((shot) => shot.cut_note.trim().length > 0);
   const thumbs = new Map(shots.map((shot) => [shot.shotIndex, shot]));
 
   // A department with nothing in it renders flat, so it has no drawer to open.
   const expandable = new Set(
     breakdown.departments
-      .filter((d) => d.steps.length > 0 || d.gear.length > 0 || d.pitfalls.length > 0)
+      .filter((d) => d.steps.length > 0 || d.pitfalls.length > 0)
       .map((d) => d.role)
   );
-  // Asking for a department that turned out to be empty should not leave the
-  // whole list shut; camera is the fallback because it always has work in it.
-  const initiallyOpen =
-    openRole && expandable.has(openRole) ? openRole : expandable.has("camera") ? "camera" : null;
+  const initiallyOpen = openRole && expandable.has(openRole) ? openRole : null;
 
   const [expanded, setExpanded] = useState<Partial<Record<Department, boolean>>>(() =>
     initiallyOpen ? { [initiallyOpen]: true } : {}
@@ -412,13 +450,6 @@ export function SegmentBreakdown({
     if (openRole && expandable.has(openRole)) {
       setExpanded((prev) => ({ ...prev, [openRole]: true }));
     }
-  }
-
-  const facts: string[] = [];
-  if (breakdown.minimum_crew.trim()) facts.push(breakdown.minimum_crew.trim());
-  if (sequence.length > 0) facts.push(`${sequence.length} shot${sequence.length === 1 ? "" : "s"}`);
-  if (segmentSeconds !== null && Number.isFinite(segmentSeconds) && segmentSeconds > 0) {
-    facts.push(formatDuration(segmentSeconds));
   }
 
   /*
@@ -439,18 +470,16 @@ export function SegmentBreakdown({
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
-  const tiers = (Object.keys(TIER_LABELS) as (keyof typeof TIER_LABELS)[]).filter(
-    (key) => breakdown.budget_tiers[key].length > 0
-  );
-
   return (
     <article className="flex flex-col gap-10">
-      {/* 1. Header */}
-      <header className="flex flex-col gap-3">
+      {/* 1. The read */}
+      <header id="what-happens" className="flex scroll-mt-20 flex-col gap-3">
         <h2 className="max-w-[40ch] text-[22px] leading-tight text-text-0 md:text-[26px]">
           {breakdown.title}
         </h2>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Prose text={breakdown.what_happens} className="max-w-[72ch]" />
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          {/* Crew and kit are reference material and live in the rail's Details tab. */}
           <Pill
             tone={
               breakdown.difficulty === "hard" || breakdown.difficulty === "specialist"
@@ -461,66 +490,136 @@ export function SegmentBreakdown({
           >
             {humanize(breakdown.difficulty)}
           </Pill>
-          {facts.length > 0 ? (
-            <p className="text-[12px] text-text-2">{facts.join(" · ")}</p>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <CopyButton
-            build={() => breakdownToMarkdown(breakdown)}
-            label="Copy as Markdown"
-            describes="Breakdown"
-          />
-          <button
-            type="button"
-            onClick={downloadJson}
-            className="inline-flex h-8 items-center rounded-[3px] border border-line px-2.5 text-[12px] text-text-0 hover:border-line-strong hover:bg-ink-2"
-          >
-            Download JSON
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <CopyButton
+              build={() => breakdownToMarkdown(breakdown)}
+              label="Copy as Markdown"
+              describes="Breakdown"
+            />
+            <button
+              type="button"
+              onClick={downloadJson}
+              className="inline-flex h-8 items-center rounded-[3px] border border-line px-2.5 text-[12px] text-text-0 hover:border-line-strong hover:bg-ink-2"
+            >
+              Download JSON
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* 2. The answer to what they asked, first, because it is why they are here. */}
+      {/* 2. The answer, headed by the question it answers. */}
       {breakdown.focus_answer.trim() ? (
-        <section id="the-question" className="border-l-2 border-accent pl-4">
-          <SectionTitle>The question you asked</SectionTitle>
-          {breakdown.focus?.trim() ? (
-            <p className="mb-3 max-w-[72ch] text-[13px] leading-relaxed text-text-2">
-              &ldquo;{breakdown.focus.trim()}&rdquo;
-            </p>
-          ) : null}
+        <section id="the-question" className="scroll-mt-20 border-l-2 border-accent pl-4">
+          <h3 className="mb-3 max-w-[60ch] text-[15px] leading-snug text-text-0">
+            {breakdown.focus?.trim() || "The question you asked"}
+          </h3>
           <Prose text={breakdown.focus_answer} className="max-w-[72ch]" />
         </section>
       ) : null}
 
-      {/* 3. What happens */}
-      {breakdown.what_happens.trim() ||
-      breakdown.setting.trim() ||
-      breakdown.approach.trim() ? (
-        <section id="what-happens">
-          <SectionTitle>What happens</SectionTitle>
-          <div className="max-w-[72ch] flex flex-col gap-4">
-            <Prose text={breakdown.what_happens} />
-            {breakdown.setting.trim() ? (
-              <p className="text-[13px] leading-relaxed text-text-1">
-                <span className="text-text-2">Setting. </span>
-                {breakdown.setting}
+      {/* 3. The spine: the technique, and every route to it. */}
+      <section id="how-it-was-made" className="scroll-mt-20">
+        <SectionTitle>How it was made</SectionTitle>
+        {hasTechnique(technique) ? (
+          <div className="flex flex-col gap-5">
+            {technique.name.trim() ? (
+              <p className="max-w-[60ch] text-[15px] leading-snug text-text-0">{technique.name}</p>
+            ) : null}
+            {technique.evidence.trim() ? (
+              <p className="max-w-[72ch] text-[13px] leading-relaxed text-text-1">
+                {technique.evidence}
               </p>
             ) : null}
-            {breakdown.approach.trim() ? (
-              <div>
-                <h4 className="eyebrow mb-2">How it was approached</h4>
-                <Prose text={breakdown.approach} />
+            {technique.routes.length > 0 ? (
+              <div className="flex flex-col gap-3">
+                {technique.routes.map((route, i) =>
+                  i === 0 ? (
+                    <RouteCard key={i} route={route} />
+                  ) : (
+                    <RouteDisclosure key={i} route={route} />
+                  )
+                )}
               </div>
             ) : null}
+          </div>
+        ) : (
+          <p className="max-w-[72ch] text-[13px] leading-relaxed text-text-2">{LEGACY_NOTE}</p>
+        )}
+      </section>
+
+      {/* 4. Departments */}
+      {breakdown.departments.length > 0 ? (
+        <section id="departments" className="scroll-mt-20">
+          <SectionTitle>Departments</SectionTitle>
+          <div className="border-t border-line">
+            {breakdown.departments.map((dept) => {
+              const label = DEPARTMENT_LABELS[dept.role];
+
+              // "No VFX, this is entirely practical" is the whole answer. A
+              // disclosure that opens onto nothing is a lie about there being
+              // more to read.
+              if (!expandable.has(dept.role)) {
+                return (
+                  <div
+                    key={dept.role}
+                    className="flex items-baseline gap-3 border-b border-line py-3"
+                  >
+                    <span className="shrink-0 text-[13px] text-text-1 md:w-[11rem]">{label}</span>
+                    <span className="min-w-0 flex-1 text-[13px] leading-relaxed text-text-2">
+                      {dept.headline}
+                    </span>
+                  </div>
+                );
+              }
+
+              const isOpen = !!expanded[dept.role];
+              return (
+                <Disclosure
+                  key={dept.role}
+                  open={isOpen}
+                  onOpenChange={(next) => setExpanded((prev) => ({ ...prev, [dept.role]: next }))}
+                  className="border-b border-line"
+                  summaryClassName="py-3"
+                  summary={
+                    <>
+                      <span className="shrink-0 text-[13px] text-text-0 md:w-[11rem]">{label}</span>
+                      <span
+                        className={`min-w-0 flex-1 text-[13px] leading-relaxed text-text-2 ${isOpen ? "" : "line-clamp-1"}`.trim()}
+                      >
+                        {dept.headline}
+                      </span>
+                    </>
+                  }
+                >
+                  <div className="flex flex-col gap-4 pb-5 md:pl-[calc(11rem+0.75rem)]">
+                    <Steps steps={dept.steps} />
+                    {dept.pitfalls.length > 0 ? (
+                      <div>
+                        <h4 className="eyebrow mb-2">Watch for</h4>
+                        <ul className="flex max-w-[72ch] flex-col gap-1.5">
+                          {dept.pitfalls.map((item, i) => (
+                            <li
+                              key={i}
+                              className="border-l border-line pl-3 text-[13px] leading-relaxed text-text-2"
+                            >
+                              {item}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                </Disclosure>
+              );
+            })}
           </div>
         </section>
       ) : null}
 
-      {/* 4. Shot sequence */}
-      {sequence.length > 0 ? (
-        <section id="shot-sequence">
+      {/* 5. Shot sequence. One shot has no sequence: the read already said
+          what happens in it, and a table with one row would say it again. */}
+      {sequence.length > 1 ? (
+        <section id="shot-sequence" className="scroll-mt-20">
           <SectionTitle>Shot sequence</SectionTitle>
 
           <div className="hidden overflow-x-auto md:block">
@@ -666,282 +765,6 @@ export function SegmentBreakdown({
                 </li>
               );
             })}
-          </ul>
-        </section>
-      ) : null}
-
-      {/* 5. Post-production: the bridge from what was shot to what each
-          discipline does, and the route for a reader who cannot reproduce the
-          conditions on the day. */}
-      {hasPost(post) ? (
-        <section id="post-production" className="scroll-mt-20">
-          <SectionTitle>Post-production</SectionTitle>
-          <div className="flex flex-col gap-6">
-            {post.key_technique.trim() ? (
-              <p className="max-w-[52ch] text-[17px] leading-snug text-text-0 md:text-[19px]">
-                {post.key_technique}
-              </p>
-            ) : null}
-
-            {post.in_camera_or_post.trim() ? (
-              <div className="rounded-[3px] border border-line bg-ink-1 p-4">
-                <h4 className="eyebrow mb-2">In camera or in post</h4>
-                <Prose text={post.in_camera_or_post} className="max-w-[72ch]" />
-              </div>
-            ) : null}
-
-            {post.pipeline.length > 0 ? (
-              <div>
-                <h4 className="eyebrow mb-2">Pipeline</h4>
-                <ol className="flex flex-col border-t border-line">
-                  {post.pipeline.map((entry, i) => (
-                    <li key={i} className="flex gap-3 border-b border-line py-3">
-                      <span className="mono shrink-0 pt-0.5 text-[12px] text-text-3">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <div className="flex min-w-0 flex-col gap-1.5">
-                        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                          <h5 className="text-[13px] text-text-0">{entry.step}</h5>
-                          {entry.software.trim() ? (
-                            <span className="mono text-[11px] text-text-3">{entry.software}</span>
-                          ) : null}
-                        </div>
-                        {entry.how.trim() ? (
-                          <p className="max-w-[72ch] text-[13px] leading-relaxed text-text-0">
-                            {entry.how}
-                          </p>
-                        ) : null}
-                        {entry.why.trim() ? (
-                          <p className="max-w-[72ch] text-[12px] leading-relaxed text-text-2">
-                            {entry.why}
-                          </p>
-                        ) : null}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            ) : null}
-
-            {post.alternatives.length > 0 ? (
-              <div>
-                <h4 className="eyebrow mb-2">Other routes to the same look</h4>
-                <ul className="flex max-w-[72ch] flex-col gap-2">
-                  {post.alternatives.map((item, i) => (
-                    <li key={i} className="flex gap-3 text-[13px] leading-relaxed text-text-1">
-                      <span
-                        aria-hidden
-                        className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-text-3"
-                      />
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {post.pitfalls.length > 0 ? (
-              <div>
-                <h4 className="eyebrow mb-2">Watch for in post</h4>
-                <ul className="flex max-w-[72ch] flex-col gap-1.5">
-                  {post.pitfalls.map((item, i) => (
-                    <li
-                      key={i}
-                      className="border-l border-line pl-3 text-[13px] leading-relaxed text-text-2"
-                    >
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
-      {/* 6. Departments */}
-      {breakdown.departments.length > 0 ? (
-        <section id="departments" className="scroll-mt-20">
-          <SectionTitle>Departments</SectionTitle>
-          <div className="border-t border-line">
-            {breakdown.departments.map((dept) => {
-              const label = DEPARTMENT_LABELS[dept.role];
-              const isExpandable = expandable.has(dept.role);
-
-              // "No VFX, this is entirely practical" is the whole answer. A
-              // disclosure that opens onto nothing is a lie about there being
-              // more to read.
-              if (!isExpandable) {
-                return (
-                  <div
-                    key={dept.role}
-                    className="grid gap-1 border-b border-line py-3 md:grid-cols-[11rem_minmax(0,1fr)] md:gap-4"
-                  >
-                    <p className="text-[13px] text-text-1">{label}</p>
-                    <p className="max-w-[72ch] text-[13px] leading-relaxed text-text-2">
-                      {dept.headline}
-                    </p>
-                  </div>
-                );
-              }
-
-              const isOpen = !!expanded[dept.role];
-              return (
-                <details
-                  key={dept.role}
-                  open={isOpen}
-                  onToggle={(event) => {
-                    // Read the element NOW: React nulls event.currentTarget the
-                    // moment the handler returns, and a state updater can be
-                    // re-invoked during render (it always is under StrictMode),
-                    // where reading it would throw and take the page down.
-                    const isNowOpen = event.currentTarget.open;
-                    setExpanded((prev) => ({ ...prev, [dept.role]: isNowOpen }));
-                  }}
-                  className="group border-b border-line"
-                >
-                  <summary
-                    aria-expanded={isOpen}
-                    className="grid cursor-pointer list-none gap-1 py-3 md:grid-cols-[11rem_minmax(0,1fr)_1.5rem] md:gap-4"
-                  >
-                    <span className="text-[13px] text-text-0">{label}</span>
-                    <span className="max-w-[72ch] text-[13px] leading-relaxed text-text-2">
-                      {dept.headline}
-                    </span>
-                    <span
-                      aria-hidden
-                      className="mono hidden justify-self-end text-[13px] text-text-3 md:block"
-                    >
-                      {isOpen ? "−" : "+"}
-                    </span>
-                  </summary>
-
-                  <div className="flex flex-col gap-4 pb-5 md:pl-[calc(11rem+1rem)]">
-                    {dept.steps.length > 0 ? (
-                      <ol className="flex max-w-[72ch] flex-col gap-2">
-                        {dept.steps.map((step, i) => (
-                          <li key={i} className="flex gap-3">
-                            <span className="mono shrink-0 text-[12px] text-text-3">
-                              {String(i + 1).padStart(2, "0")}
-                            </span>
-                            <span className="text-[13px] leading-relaxed text-text-1">{step}</span>
-                          </li>
-                        ))}
-                      </ol>
-                    ) : null}
-
-                    {dept.gear.length > 0 ? (
-                      <div>
-                        <h4 className="eyebrow mb-2">Gear</h4>
-                        <ul className="flex flex-wrap gap-1.5">
-                          {dept.gear.map((item, i) => (
-                            <li key={i}>
-                              <Pill>{item}</Pill>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-
-                    {dept.pitfalls.length > 0 ? (
-                      <div>
-                        <h4 className="eyebrow mb-2">Watch for</h4>
-                        <ul className="flex max-w-[72ch] flex-col gap-1.5">
-                          {dept.pitfalls.map((item, i) => (
-                            <li
-                              key={i}
-                              className="border-l border-line pl-3 text-[13px] leading-relaxed text-text-2"
-                            >
-                              {item}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                  </div>
-                </details>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
-
-      {/* 7. Shot list */}
-      {breakdown.shot_list.length > 0 ? (
-        <section>
-          <div className="mb-3 flex flex-wrap items-baseline justify-between gap-3">
-            <h3 className="eyebrow">Shot list</h3>
-            <CopyButton
-              build={() =>
-                `${breakdown.shot_list.map((line, i) => `${i + 1}. ${line}`).join("\n")}\n`
-              }
-              label="Copy shot list"
-              describes="Shot list"
-            />
-          </div>
-          <ol className="rounded-[3px] border border-line bg-ink-1">
-            {breakdown.shot_list.map((line, i) => (
-              <li
-                key={i}
-                className="mono flex gap-3 border-b border-line/60 px-3 py-2 text-[12px] leading-relaxed text-text-1 last:border-0"
-              >
-                <span className="shrink-0 text-text-3">{String(i + 1).padStart(2, "0")}</span>
-                <span>{line}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      ) : null}
-
-      {/* 8. Prep checklist */}
-      {breakdown.prep_checklist.length > 0 ? (
-        <section>
-          <SectionTitle>Prep checklist</SectionTitle>
-          <ul className="flex max-w-[72ch] flex-col gap-2">
-            {breakdown.prep_checklist.map((item, i) => (
-              <li key={i} className="flex gap-3 text-[13px] leading-relaxed text-text-1">
-                <span aria-hidden className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-text-3" />
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      {/* 9. Budget tiers */}
-      {tiers.length > 0 ? (
-        <section>
-          <SectionTitle>What it costs</SectionTitle>
-          <div className="grid gap-4 md:grid-cols-3">
-            {tiers.map((key) => (
-              <div key={key} className="rounded-[3px] border border-line bg-ink-1 p-3">
-                <h4 className="mb-2 text-[13px] text-text-0">{TIER_LABELS[key]}</h4>
-                <ul className="flex flex-col gap-1.5">
-                  {breakdown.budget_tiers[key].map((item, i) => (
-                    <li key={i} className="text-[13px] leading-relaxed text-text-2">
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {/* 10. Common mistakes */}
-      {breakdown.common_mistakes.length > 0 ? (
-        <section>
-          <SectionTitle>Common mistakes</SectionTitle>
-          <ul className="flex max-w-[72ch] flex-col gap-2">
-            {breakdown.common_mistakes.map((item, i) => (
-              <li
-                key={i}
-                className="border-l border-line pl-3 text-[13px] leading-relaxed text-text-1"
-              >
-                {item}
-              </li>
-            ))}
           </ul>
         </section>
       ) : null}

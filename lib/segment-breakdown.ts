@@ -59,14 +59,75 @@ export function toImageBlock(buffer: Buffer, contentType: string): ImageBlock {
   };
 }
 
+export type SegmentFrame = {
+  buffer: Buffer;
+  contentType: string;
+  /** Position in the segment's timeline, so the model can read change over time. */
+  timestampSeconds: number;
+};
+
 export type SegmentShotInput = {
   shotIndex: number;
   startSeconds: number;
   endSeconds: number;
   metadata: ShotMetadata | null;
-  /** Representative frame, when one could be read. */
+  /**
+   * Frames of this shot in time order. One frame cannot show motion, and a
+   * single-shot segment used to get exactly one: a 24fps clip full of
+   * frame-blended traffic was read as a still photograph held on the timeline,
+   * because from one frame that is indistinguishable from a time remap.
+   */
+  images?: SegmentFrame[];
+  /** The representative frame alone. Kept for callers that still send one. */
   image?: { buffer: Buffer; contentType: string } | null;
 };
+
+/**
+ * How many frames each shot gets out of a fixed budget.
+ *
+ * Few shots means more frames each, so temporal effects inside a shot are
+ * visible; many shots means one representative frame each, chosen by
+ * selectFrameIndices so the segment's ends are always covered.
+ */
+export function planFrameBudget(candidatesPerShot: number[], max = MAX_BREAKDOWN_FRAMES): number[] {
+  const n = candidatesPerShot.length;
+  if (n === 0 || max <= 0) return [];
+  if (n > max) {
+    const chosen = new Set(selectFrameIndices(n, max));
+    return candidatesPerShot.map((c, i) => (chosen.has(i) && c > 0 ? 1 : 0));
+  }
+  const base = Math.max(1, Math.floor(max / n));
+  const alloc = candidatesPerShot.map((c) => Math.min(c, base));
+  let used = alloc.reduce((a, b) => a + b, 0);
+  for (let pass = 0; used < max && pass < max; pass += 1) {
+    let grew = false;
+    for (let i = 0; i < n && used < max; i += 1) {
+      if (alloc[i] < candidatesPerShot[i]) {
+        alloc[i] += 1;
+        used += 1;
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+  return alloc;
+}
+
+/**
+ * Pick `count` frames spread across a shot's time-ordered candidates. The
+ * first and last are always kept when two or more are taken, because the
+ * change between them is what a temporal effect looks like.
+ */
+export function spreadFrames<T>(ordered: T[], count: number, representative?: T): T[] {
+  if (count <= 0 || ordered.length === 0) return [];
+  if (count >= ordered.length) return ordered;
+  if (count === 1) return [representative && ordered.includes(representative) ? representative : ordered[0]];
+  const out: T[] = [];
+  for (let j = 0; j < count; j += 1) {
+    out.push(ordered[Math.round((j * (ordered.length - 1)) / (count - 1))]);
+  }
+  return [...new Set(out)];
+}
 
 /**
  * Which shots get a frame in the prompt.
@@ -183,6 +244,8 @@ export async function generateSegmentBreakdown(input: {
   focus?: string | null;
   videoTitle?: string | null;
   segmentSeconds: number;
+  /** Frames per second of the analysed file. Bounds what a shutter can have done. */
+  fps?: number | null;
   preferences?: UserPreferences | null;
   insights?: string | null;
 }): Promise<SegmentBreakdown> {
@@ -193,7 +256,14 @@ export async function generateSegmentBreakdown(input: {
     throw new SegmentBreakdownError("ANTHROPIC_API_KEY is not configured", false);
   }
 
-  const withImages = input.shots.filter((s) => s.image);
+  const framesOf = (shot: SegmentShotInput): SegmentFrame[] =>
+    shot.images && shot.images.length > 0
+      ? shot.images
+      : shot.image
+        ? [{ ...shot.image, timestampSeconds: shot.startSeconds }]
+        : [];
+  const withImages = input.shots.filter((s) => framesOf(s).length > 0);
+  const frameCount = withImages.reduce((n, s) => n + framesOf(s).length, 0);
 
   const hintText = [
     input.videoTitle,
@@ -212,8 +282,9 @@ export async function generateSegmentBreakdown(input: {
 
   const system = segmentSystemPrompt({
     shotCount: input.shots.length,
-    frameCount: withImages.length,
+    frameCount,
     segmentSeconds: input.segmentSeconds,
+    fps: input.fps ?? null,
     focus: input.focus ?? null,
     videoTitle: input.videoTitle ?? null,
     aboutFilmmaker: formatAboutFilmmaker(input.preferences ?? null),
@@ -225,11 +296,14 @@ export async function generateSegmentBreakdown(input: {
   // frame to a shot number instead of guessing from order.
   const content: Anthropic.ContentBlockParam[] = [];
   for (const shot of withImages) {
-    content.push({
-      type: "text",
-      text: `Shot ${shot.shotIndex} · ${shotTimecode(shot.startSeconds, shot.endSeconds)} · representative frame`,
+    const frames = framesOf(shot);
+    frames.forEach((frame, i) => {
+      content.push({
+        type: "text",
+        text: `Shot ${shot.shotIndex} · ${shotTimecode(shot.startSeconds, shot.endSeconds)} · frame ${i + 1} of ${frames.length} at ${formatTimecode(frame.timestampSeconds)}`,
+      });
+      content.push(toImageBlock(frame.buffer, frame.contentType) as Anthropic.ImageBlockParam);
     });
-    content.push(toImageBlock(shot.image!.buffer, shot.image!.contentType) as Anthropic.ImageBlockParam);
   }
 
   content.push({

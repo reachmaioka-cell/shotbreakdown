@@ -1,39 +1,64 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BREAKDOWN_FRAMES, selectFrameIndices } from "@/lib/segment-breakdown";
+import {
+  MAX_BREAKDOWN_FRAMES,
+  SEGMENT_PROMPT_VERSION,
+  selectFrameIndices,
+} from "@/lib/segment-breakdown";
 import { formatDurationLimit } from "@/lib/plans";
 import {
   DEPARTMENTS,
   SEGMENT_BREAKDOWN_VERSION,
   SegmentBreakdownSchema,
+  StoredSegmentBreakdownSchema,
+  TechniqueSchema,
   normalizeSegmentBreakdown,
-  normalizeSegmentPost,
+  normalizeTechnique,
   readSegmentBreakdown,
   type SegmentBreakdown,
   type StoredSegmentBreakdown,
+  type Technique,
+  type TechniqueRoute,
 } from "@/lib/validation";
+
+/** A complete route: three real steps, which is the least the prompt accepts. */
+function sampleRoute(overrides: Partial<TechniqueRoute> = {}): TechniqueRoute {
+  return {
+    name: "In post: time remap with frame blending",
+    when: "You have normal-speed footage and a subject who held still.",
+    steps: [
+      "Speed/Duration 600%, Time Interpolation: Frame Blending (Resolve free: Retime, Frame Blend).",
+      "Freeze one clean frame of the subject and mask it over the blended plate.",
+      "Grade the smear to match the sharp plate before adding grain.",
+    ],
+    gives_up: "",
+    ...overrides,
+  };
+}
+
+function sampleTechnique(overrides: Partial<Technique> = {}): Technique {
+  return {
+    name: "Time remap: normal-speed footage sped up 6x with frame blending; subject holds still.",
+    evidence:
+      "The traffic smear is stepped and ghosted, which a 1/24s shutter cannot make; the man is sharp only because he held still.",
+    routes: [sampleRoute()],
+    ...overrides,
+  };
+}
 
 /** A schema-valid model response. Fields the test does not care about are empty. */
 function sampleBreakdown(overrides: Partial<SegmentBreakdown> = {}): SegmentBreakdown {
   return {
     title: "Night arrival",
-    what_happens: "A car pulls up outside a lit house.",
-    setting: "Suburban street, night.",
-    approach: "Two wides and a push-in, all available light.",
+    what_happens: "A car pulls up outside a lit house on a suburban street at night.",
     focus_answer: "",
+    technique: sampleTechnique(),
     shot_sequence: [],
     departments: [],
-    shot_list: [],
-    prep_checklist: [],
-    minimum_crew: "Two.",
     difficulty: "moderate",
-    budget_tiers: { under_500_usd: [], under_5000_usd: [], full_production: [] },
-    common_mistakes: [],
-    post_production: {
-      key_technique: "",
-      in_camera_or_post: "",
-      pipeline: [],
-      alternatives: [],
-      pitfalls: [],
+    crew: "2: operator, one performer.",
+    kit: {
+      minimum: "A phone on a tripod; loses the smooth push-in.",
+      full: "Mirrorless body, 35mm prime, slider, one bounce.",
     },
     ...overrides,
   };
@@ -44,7 +69,7 @@ function storedBreakdown(overrides: Partial<StoredSegmentBreakdown> = {}): Store
   return {
     ...sampleBreakdown(),
     version: SEGMENT_BREAKDOWN_VERSION,
-    prompt_version: "segment-v1",
+    prompt_version: SEGMENT_PROMPT_VERSION,
     focus: "How was the push-in done?",
     generated_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
@@ -59,6 +84,11 @@ function shotInputs(count: number) {
   }));
 }
 
+/** "w0 w1 w2 …": a text of exactly `count` words, each one identifiable. */
+function words(count: number): string {
+  return Array.from({ length: count }, (_, i) => `w${i}`).join(" ");
+}
+
 describe("segment breakdown grammar budget", () => {
   /**
    * Anthropic rejects an output schema whose compiled grammar is too large, and
@@ -69,12 +99,14 @@ describe("segment breakdown grammar budget", () => {
    * two to a department brief without a surprise in production.
    *
    * Byte count is a proxy for grammar complexity, not the thing itself, which
-   * is why the ceiling sits far below the observed failure point.
+   * is why the ceiling sits far below the observed failure point. It came down
+   * from 4500 with v3, which retired half the fields: a schema that quietly
+   * grew back to its old size should be caught here, not in production.
    */
   it("stays inside the grammar budget with headroom", async () => {
     const { zodOutputFormat } = await import("@anthropic-ai/sdk/helpers/zod");
     const size = JSON.stringify(zodOutputFormat(SegmentBreakdownSchema)).length;
-    expect(size).toBeLessThan(4500);
+    expect(size).toBeLessThan(3500);
   });
 
   it("has no array length constraints, which blow up the grammar", async () => {
@@ -90,9 +122,9 @@ describe("normalizeSegmentBreakdown departments", () => {
     const out = normalizeSegmentBreakdown(
       sampleBreakdown({
         departments: [
-          { role: "color", headline: "Cool the exteriors.", steps: [], gear: [], pitfalls: [] },
-          { role: "camera", headline: "One body, two primes.", steps: [], gear: [], pitfalls: [] },
-          { role: "sound", headline: "Wild the street tone.", steps: [], gear: [], pitfalls: [] },
+          { role: "color", headline: "Cool the exteriors.", steps: [], pitfalls: [] },
+          { role: "camera", headline: "One body, two primes.", steps: [], pitfalls: [] },
+          { role: "sound", headline: "Wild the street tone.", steps: [], pitfalls: [] },
         ],
       }),
       shotInputs(2)
@@ -109,8 +141,7 @@ describe("normalizeSegmentBreakdown departments", () => {
           {
             role: "camera",
             headline: "One body, two primes.",
-            steps: ["Set the 35mm on sticks."],
-            gear: ["Any mirrorless body — a phone on a tripod also works"],
+            steps: ["Set the 35mm on sticks [a phone on a tripod also works]."],
             pitfalls: ["Do not hand-hold the push-in."],
           },
         ],
@@ -121,7 +152,7 @@ describe("normalizeSegmentBreakdown departments", () => {
     const camera = out.departments.find((d) => d.role === "camera");
     expect(camera).toMatchObject({
       headline: "One body, two primes.",
-      steps: ["Set the 35mm on sticks."],
+      steps: ["Set the 35mm on sticks [a phone on a tripod also works]."],
       pitfalls: ["Do not hand-hold the push-in."],
     });
   });
@@ -132,7 +163,6 @@ describe("normalizeSegmentBreakdown departments", () => {
     for (const brief of out.departments) {
       expect(brief.headline.trim().length).toBeGreaterThan(0);
       expect(brief.steps).toEqual([]);
-      expect(brief.gear).toEqual([]);
       expect(brief.pitfalls).toEqual([]);
     }
   });
@@ -144,8 +174,11 @@ describe("normalizeSegmentBreakdown departments", () => {
           {
             role: "director",
             headline: "Play the arrival in two beats.",
-            steps: ["Step 3: Block the walk to the door.", "3. Call action on the headlights.", "3) Hold after the door shuts."],
-            gear: [],
+            steps: [
+              "Step 3: Block the walk to the door.",
+              "3. Call action on the headlights.",
+              "3) Hold after the door shuts.",
+            ],
             pitfalls: [],
           },
         ],
@@ -168,8 +201,12 @@ describe("normalizeSegmentBreakdown departments", () => {
           {
             role: "editorial",
             headline: "Cut on the door.",
-            steps: ["Cut on the door close.", "1. Cut on the door close.", "CUT ON THE DOOR CLOSE.", "Hold the tail two seconds."],
-            gear: [],
+            steps: [
+              "Cut on the door close.",
+              "1. Cut on the door close.",
+              "CUT ON THE DOOR CLOSE.",
+              "Hold the tail two seconds.",
+            ],
             pitfalls: [],
           },
         ],
@@ -179,6 +216,70 @@ describe("normalizeSegmentBreakdown departments", () => {
 
     const editorial = out.departments.find((d) => d.role === "editorial");
     expect(editorial?.steps).toEqual(["Cut on the door close.", "Hold the tail two seconds."]);
+  });
+});
+
+describe("normalizeSegmentBreakdown word ceilings", () => {
+  /*
+   * The prompt asks for these ceilings; the normalizer guarantees them. The
+   * renderer lays the page out on that guarantee, so a model that ignores the
+   * prompt must not be able to push a paragraph into the read or a step into
+   * the department accordion that runs past the ceiling.
+   */
+  /*
+   * The prompt asks for 60 and 40; the normalizer cuts at 90 and 60. The gap is
+   * deliberate: a step that runs a clause over the ask still carries its
+   * values, and a cut in the middle of them would lose exactly what the reader
+   * came for. The ceiling exists for a model that ignored the ask entirely.
+   */
+  it("clamps what_happens to 90 words with a trailing ellipsis", () => {
+    const out = normalizeSegmentBreakdown(
+      sampleBreakdown({ what_happens: words(140) }),
+      shotInputs(1)
+    );
+
+    expect(out.what_happens.split(" ")).toHaveLength(90);
+    expect(out.what_happens.startsWith("w0 w1 w2")).toBe(true);
+    expect(out.what_happens.endsWith("…")).toBe(true);
+    expect(out.what_happens).not.toContain("w90");
+  });
+
+  it("clamps a department step to 60 words", () => {
+    const out = normalizeSegmentBreakdown(
+      sampleBreakdown({
+        departments: [
+          { role: "camera", headline: "One setup.", steps: [words(100)], pitfalls: [] },
+        ],
+      }),
+      shotInputs(1)
+    );
+
+    const step = out.departments.find((d) => d.role === "camera")?.steps[0] ?? "";
+    expect(step.split(" ")).toHaveLength(60);
+    expect(step.endsWith("…")).toBe(true);
+    expect(step).not.toContain("w60");
+  });
+
+  it("cuts at the last sentence end rather than mid-clause when one falls in the back half", () => {
+    // 50 words, a full stop after word 44, then 5 more words past the ceiling.
+    const sentence = `${words(45).replace(/w44$/, "w44.")} ${words(55).split(" ").slice(45).join(" ")}`;
+    const out = normalizeSegmentBreakdown(
+      sampleBreakdown({
+        departments: [
+          { role: "camera", headline: "One setup.", steps: [`${sentence} ${words(20)}`], pitfalls: [] },
+        ],
+      }),
+      shotInputs(1)
+    );
+    const step = out.departments.find((d) => d.role === "camera")?.steps[0] ?? "";
+    expect(step.endsWith("w44.")).toBe(true);
+    expect(step.endsWith("…")).toBe(false);
+  });
+
+  it("leaves text under the ceiling untouched, with no ellipsis", () => {
+    const out = normalizeSegmentBreakdown(sampleBreakdown(), shotInputs(1));
+    expect(out.what_happens).toBe(sampleBreakdown().what_happens);
+    expect(out.what_happens.endsWith("…")).toBe(false);
   });
 });
 
@@ -220,133 +321,135 @@ describe("normalizeSegmentBreakdown shot sequence", () => {
   });
 });
 
-describe("normalizeSegmentPost", () => {
-  it("fills every field when the model returned nothing at all", () => {
+describe("normalizeTechnique", () => {
+  const route = (name: string, steps: string[]): TechniqueRoute => ({
+    name,
+    when: "",
+    steps,
+    gives_up: "",
+  });
+
+  it("fills a safe empty shape from undefined", () => {
     for (const raw of [undefined, null] as const) {
-      const out = normalizeSegmentPost(raw);
-      expect(out).toEqual({
-        key_technique: "",
-        in_camera_or_post: "",
-        pipeline: [],
-        alternatives: [],
-        pitfalls: [],
-      });
+      expect(normalizeTechnique(raw)).toEqual({ name: "", evidence: "", routes: [] });
     }
   });
 
-  it("trims the prose and keeps a complete pipeline entry", () => {
-    const out = normalizeSegmentPost({
-      key_technique: "  Frame blending  ",
-      in_camera_or_post: "  Shot at normal shutter; the smear is made afterwards.  ",
-      pipeline: [
-        {
-          step: "  Frame-blend the traffic  ",
-          software: "Resolve (free)",
-          how: "Retime, Frame Blend, 25 percent speed",
-          why: "Builds the smear the long exposure would have given.",
-        },
-      ],
-      alternatives: ["  1. Shoot it in camera with a 10-stop ND.  "],
-      pitfalls: ["Blending a handheld take smears the frame edge too."],
+  it("returns empty fields rather than throwing on a half-built object", () => {
+    const half = { name: "Well shot, no trick." } as unknown as Technique;
+    expect(normalizeTechnique(half)).toEqual({
+      name: "Well shot, no trick.",
+      evidence: "",
+      routes: [],
     });
-
-    expect(out.key_technique).toBe("Frame blending");
-    expect(out.in_camera_or_post).toBe("Shot at normal shutter; the smear is made afterwards.");
-    expect(out.pipeline).toEqual([
-      {
-        step: "Frame-blend the traffic",
-        software: "Resolve (free)",
-        how: "Retime, Frame Blend, 25 percent speed",
-        why: "Builds the smear the long exposure would have given.",
-      },
-    ]);
-    // Alternatives run through the same list cleaner as the department steps,
-    // so a numbered prefix the model added is stripped here too.
-    expect(out.alternatives).toEqual(["Shoot it in camera with a 10-stop ND."]);
   });
 
   /*
-   * A pipeline entry is only worth rendering if it says what to do. Software
-   * and why are supporting detail, so an entry carrying nothing but those two
-   * would draw a row that reads as a blank instruction.
+   * A route is a complete recipe or it is nothing: a name with no steps under
+   * it would render as a heading the reader cannot follow. The cap is three
+   * because the page shows the first route open and the rest as disclosures,
+   * and a fourth route to the same look has never been anything but padding.
+   * Order is kept because the route actually used comes first by contract.
    */
-  it("drops an entry with neither a step nor a how, and keeps one with only a step", () => {
-    const out = normalizeSegmentPost({
-      key_technique: "",
-      in_camera_or_post: "",
-      pipeline: [
-        { step: "", software: "After Effects", how: "", why: "Because." },
-        { step: "Stabilise the plate first", software: "", how: "", why: "" },
-        { step: "", software: "", how: "Echo, 6 echoes, 0.04s decay", why: "" },
-      ],
-      alternatives: [],
-      pitfalls: [],
-    });
+  it("drops a route with no steps, keeps a route with steps, caps at 3 routes", () => {
+    const out = normalizeTechnique(
+      sampleTechnique({
+        routes: [
+          route("In post: frame blending", ["Retime to 600%.", "Frame Blending on.", "Render."]),
+          route("In camera: long exposure stills", []),
+          route("In camera: nothing written", ["   ", ""]),
+          route("Hybrid: stills plate over blended video", ["Shoot stills.", "Blend the video.", "Comp."]),
+          route("In camera: ND and a slow shutter", ["Fit a 10-stop ND.", "Shoot at 1/4s.", "Hold still."]),
+          route("In post: echo", ["Add Echo.", "Six echoes.", "Decay to taste."]),
+        ],
+      })
+    );
 
-    expect(out.pipeline).toEqual([
-      { step: "Stabilise the plate first", software: "", how: "", why: "" },
-      { step: "", software: "", how: "Echo, 6 echoes, 0.04s decay", why: "" },
+    expect(out.routes.map((r) => r.name)).toEqual([
+      "In post: frame blending",
+      "Hybrid: stills plate over blended video",
+      "In camera: ND and a slow shutter",
     ]);
+    expect(out.routes.every((r) => r.steps.length > 0)).toBe(true);
   });
 
-  it("returns empty arrays rather than throwing on a half-built object", () => {
-    const half = { key_technique: "Optical flow" } as unknown as Parameters<
-      typeof normalizeSegmentPost
-    >[0];
-    const out = normalizeSegmentPost(half);
-    expect(out.key_technique).toBe("Optical flow");
-    expect(out.pipeline).toEqual([]);
-    expect(out.alternatives).toEqual([]);
-    expect(out.pitfalls).toEqual([]);
+  it("clamps a 200-word evidence to 110 words with a trailing ellipsis", () => {
+    const out = normalizeTechnique(sampleTechnique({ evidence: words(200) }));
+
+    expect(out.evidence.split(" ")).toHaveLength(110);
+    expect(out.evidence.startsWith("w0 w1 w2")).toBe(true);
+    expect(out.evidence.endsWith("…")).toBe(true);
+    expect(out.evidence).not.toContain("w110");
+
+    // Exactly at the ceiling nothing is cut, so nothing is marked as cut.
+    const exact = normalizeTechnique(sampleTechnique({ evidence: words(110) })).evidence;
+    expect(exact.split(" ")).toHaveLength(110);
+    expect(exact.endsWith("…")).toBe(false);
+  });
+
+  it("strips list markers and dedupes route steps like department steps", () => {
+    const out = normalizeTechnique(
+      sampleTechnique({
+        routes: [
+          route("In post: frame blending", [
+            "1. Retime to 600%.",
+            "Step 2: Frame Blending on.",
+            "2) frame blending ON.",
+            "3) Render.",
+          ]),
+        ],
+      })
+    );
+
+    expect(out.routes[0].steps).toEqual(["Retime to 600%.", "Frame Blending on.", "Render."]);
+  });
+
+  /*
+   * A route step is where the real values live — the prompt refuses "apply
+   * frame blending" and asks for "Speed/Duration 600%". A step that opens with
+   * a value must keep it: "1.25x speed" stored as "25x speed" is a different
+   * recipe, and nothing on the page says the number was touched.
+   */
+  it("keeps a step that opens with a decimal, ratio or duration intact", () => {
+    const steps = [
+      "1.25x speed with Frame Blending, not Optical Flow.",
+      "16:9 crop before the retime so the blend has no black edge.",
+      "0.04s decay per echo, six echoes.",
+    ];
+    const out = normalizeTechnique(sampleTechnique({ routes: [route("In post: echo", steps)] }));
+    expect(out.routes[0].steps).toEqual(steps);
   });
 });
 
-describe("normalizeSegmentBreakdown post production", () => {
-  /*
-   * The renderer reads breakdown.post_production without guarding it, so the
-   * normalizer owes it an object even when the model skipped the section.
-   */
-  it("always produces a post_production object, even when the model omitted it", () => {
-    const raw = { ...sampleBreakdown() } as Partial<SegmentBreakdown>;
-    delete raw.post_production;
-
-    const out = normalizeSegmentBreakdown(raw as SegmentBreakdown, shotInputs(1));
-
-    expect(out.post_production).toEqual({
-      key_technique: "",
-      in_camera_or_post: "",
-      pipeline: [],
-      alternatives: [],
-      pitfalls: [],
-    });
+describe("normalizeSegmentBreakdown technique", () => {
+  it("carries a complete technique through unchanged", () => {
+    const out = normalizeSegmentBreakdown(sampleBreakdown(), shotInputs(1));
+    expect(out.technique).toEqual(sampleTechnique());
   });
 
-  it("carries a written post section through", () => {
+  it("runs the technique through normalizeTechnique", () => {
     const out = normalizeSegmentBreakdown(
       sampleBreakdown({
-        post_production: {
-          key_technique: "Optical-flow time remap",
-          in_camera_or_post: "Captured at 1/50; the trails are built in post.",
-          pipeline: [
-            {
-              step: "Time-remap to 20 percent",
-              software: "Premiere Pro",
-              how: "Speed/Duration, Optical Flow interpolation",
-              why: "Makes new in-between frames instead of doubling them.",
-            },
+        technique: sampleTechnique({
+          routes: [
+            sampleRoute(),
+            { name: "In camera: no steps written", when: "", steps: [], gives_up: "" },
           ],
-          alternatives: ["A 10-stop ND and a 1/4s shutter, on a tripod."],
-          pitfalls: ["Optical flow tears on anything crossing the frame fast."],
-        },
+        }),
       }),
       shotInputs(1)
     );
+    expect(out.technique.routes).toHaveLength(1);
+    expect(out.technique.routes[0].name).toBe(sampleRoute().name);
+  });
 
-    expect(out.post_production.key_technique).toBe("Optical-flow time remap");
-    expect(out.post_production.pipeline).toHaveLength(1);
-    expect(out.post_production.alternatives).toEqual([
-      "A 10-stop ND and a 1/4s shutter, on a tripod.",
-    ]);
+  it("gives the renderer a technique object even when the model returned a bare one", () => {
+    const raw = {
+      ...sampleBreakdown(),
+      technique: { name: "Well shot, no trick." },
+    } as unknown as SegmentBreakdown;
+    const out = normalizeSegmentBreakdown(raw, shotInputs(1));
+    expect(out.technique).toEqual({ name: "Well shot, no trick.", evidence: "", routes: [] });
   });
 });
 
@@ -355,7 +458,7 @@ describe("readSegmentBreakdown", () => {
     expect(readSegmentBreakdown(null)).toBeNull();
     expect(readSegmentBreakdown(undefined)).toBeNull();
     expect(readSegmentBreakdown({})).toBeNull();
-    // A breakdown shape with the storage envelope missing — an older row.
+    // A breakdown shape with the storage envelope missing.
     expect(readSegmentBreakdown(sampleBreakdown())).toBeNull();
     expect(readSegmentBreakdown({ title: "Night arrival", version: 1 })).toBeNull();
   });
@@ -371,27 +474,78 @@ describe("readSegmentBreakdown", () => {
   });
 
   /*
-   * Every breakdown generated before the post-production pass existed is
-   * sitting in videos.breakdown with no post_production key. The stored schema
-   * makes the field optional for exactly this reason: were it required here,
-   * this parse would return null and the reader would open a finished segment
-   * to an empty page. The generation schema below still demands the field, so
-   * this is a read-side allowance, not a loosening of what the model may
-   * return.
+   * BACKWARD COMPATIBILITY. Every breakdown written before the technique spine
+   * (segment-v1 and segment-v2; still present in real databases) sits in
+   * videos.breakdown carrying setting, approach, shot_list, prep_checklist,
+   * budget_tiers, common_mistakes and minimum_crew — v2 also post_production —
+   * and NO technique, crew or kit. The stored schema keeps each retired key
+   * optional and makes technique, crew and kit optional as well, for exactly
+   * this row.
+   *
+   * Were technique required on StoredSegmentBreakdownSchema, safeParse would
+   * fail on the missing key, readSegmentBreakdown would return null, and the
+   * owner would open a finished segment to an empty page. This test would fail
+   * at the not-null assertion below. The generation schema still demands the
+   * field, so this is a read-side allowance, not a loosening of what the model
+   * may return; the last two assertions prove the optional override is the
+   * only thing keeping the row readable.
    */
-  it("still returns a document for a stored breakdown written before post_production", () => {
-    const legacy: Record<string, unknown> = { ...storedBreakdown() };
-    delete legacy.post_production;
-    expect("post_production" in legacy).toBe(false);
+  it("still returns a document for a stored row carrying the old keys and no technique", () => {
+    const legacy: Record<string, unknown> = {
+      version: SEGMENT_BREAKDOWN_VERSION,
+      prompt_version: "segment-v2",
+      focus: "how do they do this effect",
+      generated_at: "2026-01-01T00:00:00.000Z",
+      title: "Paulista median, still man in moving traffic",
+      what_happens: "A man stands still on a bike-lane median while traffic smears past.",
+      setting: "Avenida Paulista, midday, hard sun.",
+      approach: "One locked-off wide, a single take long enough to build the smear.",
+      focus_answer: "A long exposure, with the subject holding still.",
+      shot_sequence: [
+        {
+          shot_index: 0,
+          timecode: "0:00-0:07",
+          what_happens: "He stands; the traffic streaks.",
+          how_it_was_made: "MFS, eye level, static, ~28mm.",
+          cut_note: "",
+        },
+      ],
+      departments: DEPARTMENTS.map((role) => ({
+        role,
+        headline: `${role} headline.`,
+        steps: role === "camera" ? ["Lock off on sticks."] : [],
+        pitfalls: [],
+      })),
+      shot_list: ["0 / MFS / eye level / static / ~28mm"],
+      prep_checklist: ["Tripod.", "10-stop ND."],
+      minimum_crew: "2",
+      difficulty: "easy",
+      budget_tiers: { under_500_usd: ["Phone on a tripod."], under_5000_usd: [], full_production: [] },
+      common_mistakes: ["Letting the subject shift during the exposure."],
+      post_production: {
+        key_technique: "Frame blending",
+        in_camera_or_post: "Post.",
+        pipeline: [],
+        alternatives: [],
+        pitfalls: [],
+      },
+    };
+    for (const key of ["technique", "crew", "kit"]) expect(key in legacy).toBe(false);
 
     const read = readSegmentBreakdown(legacy);
     expect(read).not.toBeNull();
-    expect(read?.title).toBe("Night arrival");
-    expect(read?.post_production).toBeUndefined();
+    expect(read?.title).toBe("Paulista median, still man in moving traffic");
+    expect(read?.departments).toHaveLength(DEPARTMENTS.length);
+    expect(read?.shot_sequence).toHaveLength(1);
+    expect(read?.technique).toBeUndefined();
+    expect(read?.crew).toBeUndefined();
+    expect(read?.kit).toBeUndefined();
 
-    // Proof the optional override is what saved it: the generation schema,
-    // where post_production is required, rejects the very same object.
+    // The generation schema, where technique is required, rejects the same object...
     expect(SegmentBreakdownSchema.safeParse(legacy).success).toBe(false);
+    // ...and so does the stored schema the moment technique is made required on it.
+    const strict = StoredSegmentBreakdownSchema.extend({ technique: TechniqueSchema });
+    expect(strict.safeParse(legacy).success).toBe(false);
   });
 });
 

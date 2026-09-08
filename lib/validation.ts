@@ -706,11 +706,12 @@ export const DepartmentBriefSchema = z.object({
   role: z.enum(DEPARTMENTS),
   /** One sentence: this department's job in THIS segment. */
   headline: z.string(),
-  /** Ordered and imperative, citing shot numbers. */
+  /**
+   * Ordered and imperative. Kit is named inside the step that uses it, with a
+   * cheap substitute in brackets — a separate gear list restated the steps.
+   */
   steps: z.array(z.string()),
-  /** Concrete kit, each with a cheap substitute in the same line. */
-  gear: z.array(z.string()),
-  /** What goes wrong on this specific segment, not general advice. */
+  /** What goes wrong on this specific segment, not general advice. At most two. */
   pitfalls: z.array(z.string()),
 });
 
@@ -727,43 +728,39 @@ export const SegmentShotSchema = z.object({
 });
 
 /**
- * The route from rushes to deliverable.
+ * How the look was made, and every route back to it.
  *
- * The department briefs describe what each discipline does. This describes the
- * thing that turns footage into the shot, which is often not what was done on
- * the day: a long-exposure smear can be shot at 1/4s with a 10-stop ND, or it
- * can be frame-blended in post from a normal-shutter take. Someone who cannot
- * stand on a median at midday with a stack of filters still needs the answer,
- * and reading the shot only as it was made hides it from them.
+ * This is the spine of the document. Everything else either sets it up (what
+ * happens) or divides it by role (departments). It replaced a "post-production"
+ * section that committed to a single reading and buried the other route in a
+ * footnote — which is how a 24fps clip full of frame-blended traffic got
+ * described as an in-camera long exposure that physics does not allow.
+ *
+ * A route is a complete recipe on its own. A reader picks the one they can
+ * actually do and follows it without reading the others.
  */
-export const SegmentPostSchema = z.object({
-  /** The one operation that makes this look. Named plainly. */
-  key_technique: z.string(),
-  /**
-   * Which parts were almost certainly captured versus made afterwards, and —
-   * the point of the field — how to reach the same result from the other side.
-   */
-  in_camera_or_post: z.string(),
-  /** Ordered, from ingest to deliverable. */
-  pipeline: z.array(
-    z.object({
-      /** What is being done. "Frame-blend the traffic". */
-      step: z.string(),
-      /** Named application, and the cheap or free equivalent. */
-      software: z.string(),
-      /** The actual operation: effect name, menu path, real values. */
-      how: z.string(),
-      /** What it buys, so a reader can judge whether to skip it. */
-      why: z.string(),
-    })
-  ),
-  /** Other routes to the same result, including the in-camera one. */
-  alternatives: z.array(z.string()),
-  /** Where this goes wrong in post specifically. */
-  pitfalls: z.array(z.string()),
+export const TechniqueRouteSchema = z.object({
+  /** "In post: time remap with frame blending" / "In camera: long exposure stills". */
+  name: z.string(),
+  /** One line: choose this route when… */
+  when: z.string(),
+  /** Ordered. Software and real values inline where they apply. */
+  steps: z.array(z.string()),
+  /** What this route gives up against the others. Empty when nothing. */
+  gives_up: z.string(),
 });
 
-export type SegmentPost = z.infer<typeof SegmentPostSchema>;
+export const TechniqueSchema = z.object({
+  /** The effect, named plainly in one line. */
+  name: z.string(),
+  /** Why this reading and not another: the artefacts, the physics, the tells. */
+  evidence: z.string(),
+  /** One to three. The route actually used comes first. */
+  routes: z.array(TechniqueRouteSchema),
+});
+
+export type Technique = z.infer<typeof TechniqueSchema>;
+export type TechniqueRoute = z.infer<typeof TechniqueRouteSchema>;
 
 export const AI_FEASIBILITY = [
   "straightforward",
@@ -825,36 +822,43 @@ export const AI_RECREATION_VERSION = 1;
 
 export const SegmentBreakdownSchema = z.object({
   title: z.string(),
+  /** What is on screen and where. Setting folds in; it was a second sentence about the same place. */
   what_happens: z.string(),
-  setting: z.string(),
-  approach: z.string(),
   /** Direct answer to what the uploader asked. Empty string when they asked nothing. */
   focus_answer: z.string(),
+  technique: TechniqueSchema,
   shot_sequence: z.array(SegmentShotSchema),
   departments: z.array(DepartmentBriefSchema),
-  post_production: SegmentPostSchema,
-  shot_list: z.array(z.string()),
-  prep_checklist: z.array(z.string()),
-  minimum_crew: z.string(),
   difficulty: z.enum(DIFFICULTIES),
-  budget_tiers: z.object({
-    under_500_usd: z.array(z.string()),
-    under_5000_usd: z.array(z.string()),
-    full_production: z.array(z.string()),
+  /** "3: operator, gaffer who also swings, one performer". */
+  crew: z.string(),
+  /**
+   * Two lines, not three tiers of lists: the least you can do it with, and
+   * what a funded shoot would book.
+   */
+  kit: z.object({
+    minimum: z.string(),
+    full: z.string(),
   }),
-  common_mistakes: z.array(z.string()),
 });
 
 export type SegmentBreakdown = z.infer<typeof SegmentBreakdownSchema>;
 
 /** As stored on videos.breakdown. */
 export const StoredSegmentBreakdownSchema = SegmentBreakdownSchema.extend({
-  /**
-   * Optional on read, required on generation. Breakdowns written before the
-   * post-production pass existed have no such key, and refusing to parse them
-   * would blank a breakdown the user already has.
+  /*
+   * Required on generation, optional on read. Rows written before the
+   * technique spine carry none of these and must still parse: a breakdown a
+   * user already has must never blank because the shape moved on. The
+   * renderer treats a missing technique as "regenerate to get it".
    */
-  post_production: SegmentPostSchema.optional(),
+  technique: TechniqueSchema.optional(),
+  crew: z.string().optional(),
+  kit: z.object({ minimum: z.string(), full: z.string() }).optional(),
+  // Keys the earlier shapes carried (setting, approach, shot_list, budget
+  // tiers, post_production and the rest) are not declared, so a legacy row
+  // parses and loses them on read. Nothing renders them; the renderer shows a
+  // one-line note where the technique would be until the row is regenerated.
   version: z.number(),
   prompt_version: z.string(),
   /** The question this breakdown was written against, so a refocus is visible. */
@@ -871,7 +875,11 @@ function cleanList(values: string[] | undefined, max: number, maxLen = 400): str
   const out: string[] = [];
   for (const raw of values ?? []) {
     const value = String(raw)
-      .replace(/^\s*(?:step\s*)?\d+[.):]\s*/i, "")
+      // Strip a real list marker — "1.", "2)", "Step 3:" — and nothing else.
+      // The lookahead is load-bearing: a route step is where the values live,
+      // and without it "1.25x speed" is stored as "25x speed" and "16:9 crop"
+      // as "9 crop", silently, with nothing on the page to say the number moved.
+      .replace(/^\s*(?:step\s*)?\d+[.):](?!\d)\s*/i, "")
       .trim()
       .slice(0, maxLen);
     if (!value) continue;
@@ -884,6 +892,46 @@ function cleanList(values: string[] | undefined, max: number, maxLen = 400): str
   return out;
 }
 
+/** Word ceilings the renderer relies on. Anything past them is cut, not wrapped. */
+/*
+ * Hard ceilings, in words. The prompt asks for less (60 / 40 / 24 / 80 / 120):
+ * these catch a model that ignored it, not one that ran a clause over, because
+ * a step cut in the middle of "Speed 800%, Time Interpolation: Optical…" has
+ * lost the value the reader came for.
+ */
+const WORDS = { short: 90, step: 60, headline: 32, evidence: 110, answer: 160 } as const;
+
+function clampWords(text: string | undefined | null, max: number): string {
+  const words = (text ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words.length <= max) return words.join(" ");
+  // Over the ceiling, drop whole sentences before dropping words: a document
+  // that ends mid-clause reads as broken, while one that ends a sentence early
+  // reads as short. Only when no sentence ends in the back half of the budget
+  // is the cut made at the word and marked.
+  const kept = words.slice(0, max);
+  for (let i = kept.length - 1; i >= Math.floor(max / 2); i--) {
+    if (/[.!?;]["')\]]?$/.test(kept[i])) return kept.slice(0, i + 1).join(" ").replace(/;$/, ".");
+  }
+  return kept.join(" ") + "…";
+}
+
+export function normalizeTechnique(raw: Technique | undefined | null): Technique {
+  const routes = (raw?.routes ?? [])
+    .map((route) => ({
+      name: clampWords(route?.name, 18),
+      when: clampWords(route?.when, 40),
+      steps: cleanList(route?.steps, 8, 320).map((step) => clampWords(step, WORDS.step)),
+      gives_up: clampWords(route?.gives_up, 40),
+    }))
+    .filter((route) => route.name && route.steps.length > 0)
+    .slice(0, 3);
+  return {
+    name: clampWords(raw?.name, 30),
+    evidence: clampWords(raw?.evidence, WORDS.evidence),
+    routes,
+  };
+}
+
 /**
  * Make a model response safe to render.
  *
@@ -891,6 +939,9 @@ function cleanList(values: string[] | undefined, max: number, maxLen = 400): str
  * canonical order, and there is exactly one shot_sequence entry per real shot,
  * in index order. The model is good at both and occasionally drops one; the
  * renderer should not have to care which.
+ *
+ * Word ceilings are enforced here as well as asked for in the prompt. The
+ * prompt is a request; this is the guarantee.
  */
 export function normalizeSegmentBreakdown(
   raw: SegmentBreakdown,
@@ -904,16 +955,14 @@ export function normalizeSegmentBreakdown(
         role,
         headline: "Nothing specific to this segment beyond standard practice.",
         steps: [],
-        gear: [],
         pitfalls: [],
       };
     }
     return {
       role,
-      headline: found.headline.trim().slice(0, 300),
-      steps: cleanList(found.steps, 12),
-      gear: cleanList(found.gear, 10),
-      pitfalls: cleanList(found.pitfalls, 5),
+      headline: clampWords(found.headline, WORDS.headline),
+      steps: cleanList(found.steps, 5).map((step) => clampWords(step, WORDS.step)),
+      pitfalls: cleanList(found.pitfalls, 2).map((item) => clampWords(item, WORDS.step)),
     };
   });
 
@@ -923,52 +972,25 @@ export function normalizeSegmentBreakdown(
     return {
       shot_index: shot.shotIndex,
       timecode: found?.timecode?.trim() || shot.timecode,
-      what_happens: found?.what_happens?.trim().slice(0, 600) || shot.summary?.trim() || "",
-      how_it_was_made: found?.how_it_was_made?.trim().slice(0, 600) || "",
-      cut_note: found?.cut_note?.trim().slice(0, 400) || "",
+      what_happens: clampWords(found?.what_happens || shot.summary || "", 40),
+      how_it_was_made: clampWords(found?.how_it_was_made, 40),
+      cut_note: clampWords(found?.cut_note, 40),
     };
   });
 
   return {
-    title: raw.title.trim().slice(0, 160),
-    what_happens: raw.what_happens.trim().slice(0, 1200),
-    setting: raw.setting.trim().slice(0, 400),
-    approach: raw.approach.trim().slice(0, 1200),
-    focus_answer: raw.focus_answer.trim().slice(0, 3000),
+    title: raw.title.trim().slice(0, 120),
+    what_happens: clampWords(raw.what_happens, WORDS.short),
+    focus_answer: clampWords(raw.focus_answer, WORDS.answer),
+    technique: normalizeTechnique(raw.technique),
     shot_sequence,
     departments,
-    // One line per shot, so a short list is padded from the sequence rather
-    // than silently describing fewer shots than the segment contains.
-    shot_list: cleanList(raw.shot_list, Math.max(shots.length, 1), 200),
-    prep_checklist: cleanList(raw.prep_checklist, 15),
-    minimum_crew: raw.minimum_crew.trim().slice(0, 200),
     difficulty: raw.difficulty,
-    budget_tiers: {
-      under_500_usd: cleanList(raw.budget_tiers?.under_500_usd, 10),
-      under_5000_usd: cleanList(raw.budget_tiers?.under_5000_usd, 10),
-      full_production: cleanList(raw.budget_tiers?.full_production, 10),
+    crew: clampWords(raw.crew, 32),
+    kit: {
+      minimum: clampWords(raw.kit?.minimum, 55),
+      full: clampWords(raw.kit?.full, 55),
     },
-    common_mistakes: cleanList(raw.common_mistakes, 6),
-    post_production: normalizeSegmentPost(raw.post_production),
-  };
-}
-
-/** Absent or partial post sections still render; they just render as empty. */
-export function normalizeSegmentPost(raw: SegmentPost | undefined | null): SegmentPost {
-  return {
-    key_technique: (raw?.key_technique ?? "").trim().slice(0, 400),
-    in_camera_or_post: (raw?.in_camera_or_post ?? "").trim().slice(0, 1200),
-    pipeline: (raw?.pipeline ?? [])
-      .map((entry) => ({
-        step: (entry?.step ?? "").trim().slice(0, 200),
-        software: (entry?.software ?? "").trim().slice(0, 200),
-        how: (entry?.how ?? "").trim().slice(0, 700),
-        why: (entry?.why ?? "").trim().slice(0, 400),
-      }))
-      .filter((entry) => entry.step || entry.how)
-      .slice(0, 14),
-    alternatives: cleanList(raw?.alternatives, 6),
-    pitfalls: cleanList(raw?.pitfalls, 6),
   };
 }
 

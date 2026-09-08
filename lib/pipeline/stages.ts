@@ -22,8 +22,11 @@ import { analyzeShotFrames, SHOT_PROMPT_VERSION } from "@/lib/shot-analysis";
 import { generateRecreationGuide } from "@/lib/recreation-guide";
 import {
   generateSegmentBreakdown,
-  selectFrameIndices,
+  MAX_BREAKDOWN_FRAMES,
+  planFrameBudget,
   SEGMENT_PROMPT_VERSION,
+  spreadFrames,
+  type SegmentFrame,
   type SegmentShotInput,
 } from "@/lib/segment-breakdown";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -1180,6 +1183,89 @@ export async function runGenerateRecreationGuide(job: ProcessingJob): Promise<Re
 }
 
 /**
+ * Frames for a segment-level pass, several per shot when the budget allows.
+ *
+ * Both the breakdown and the AI route read across the segment, and both need
+ * to see change over time inside a shot — a single representative frame cannot
+ * show a time remap, a freeze, a ramp or a hold. The candidate frames the
+ * ingest stage already extracted are spread across each shot, so they are the
+ * right sample and cost nothing extra to produce.
+ */
+async function loadSegmentFrames(
+  admin: Admin,
+  shots: { id: string; shot_index: number; start_seconds: unknown; end_seconds: unknown; metadata: unknown }[],
+  maxFrames: number
+): Promise<SegmentShotInput[]> {
+  const { data: frames } = await admin
+    .from("shot_frames")
+    .select("shot_id, storage_path, is_representative, timestamp_seconds")
+    .in(
+      "shot_id",
+      shots.map((s) => s.id)
+    )
+    .order("timestamp_seconds");
+
+  type Candidate = { path: string; t: number; rep: boolean };
+  const byShot = new Map<string, Candidate[]>();
+  for (const f of frames ?? []) {
+    const list = byShot.get(f.shot_id as string) ?? [];
+    list.push({
+      path: f.storage_path as string,
+      t: Number(f.timestamp_seconds),
+      rep: !!f.is_representative,
+    });
+    byShot.set(f.shot_id as string, list);
+  }
+  // The representative is stored twice on some shots (once as itself, once as a
+  // candidate at the same timestamp). One frame per timestamp is enough.
+  for (const [id, list] of byShot) {
+    const seen = new Set<number>();
+    byShot.set(
+      id,
+      list.filter((c) => {
+        const key = Math.round(c.t * 1000);
+        if (seen.has(key) && !c.rep) return false;
+        seen.add(key);
+        return true;
+      })
+    );
+  }
+
+  const budget = planFrameBudget(
+    shots.map((s) => byShot.get(s.id)?.length ?? 0),
+    maxFrames
+  );
+
+  return Promise.all(
+    shots.map(async (shot, i) => {
+      const parsed = ShotMetadataSchema.safeParse(shot.metadata ?? {});
+      const candidates = byShot.get(shot.id) ?? [];
+      const chosen = spreadFrames(candidates, budget[i] ?? 0, candidates.find((c) => c.rep));
+      const images: SegmentFrame[] = [];
+      for (const c of chosen) {
+        try {
+          const img = await fetchAnalysisImage(await signedUrl(admin, c.path));
+          images.push({ ...img, timestampSeconds: c.t });
+        } catch (e) {
+          // A missing frame degrades the prompt; it must not fail the segment.
+          console.error("segment frame", shot.id, e instanceof Error ? e.message : e);
+        }
+      }
+      const rep = chosen.find((c) => c.rep) ?? chosen[0];
+      const repImage = rep ? images[chosen.indexOf(rep)] ?? images[0] : images[0];
+      return {
+        shotIndex: shot.shot_index,
+        startSeconds: Number(shot.start_seconds),
+        endSeconds: Number(shot.end_seconds),
+        metadata: parsed.success ? parsed.data : null,
+        images,
+        image: repImage ? { buffer: repImage.buffer, contentType: repImage.contentType } : null,
+      };
+    })
+  );
+}
+
+/**
  * Write the breakdown for one segment.
  *
  * Runs after finalize, so every shot already has its facet record. This pass
@@ -1195,7 +1281,7 @@ export async function runGenerateSegmentBreakdown(
 
   const { data: video } = await admin
     .from("videos")
-    .select("id, user_id, title, focus, duration_seconds")
+    .select("id, user_id, title, focus, duration_seconds, fps")
     .eq("id", videoId)
     .maybeSingle();
   if (!video) throw new PipelineError("Segment not found", "not_found", false);
@@ -1216,49 +1302,7 @@ export async function runGenerateSegmentBreakdown(
     );
   }
 
-  // One representative frame per selected shot. The frames carry continuity and
-  // eyelines; the records carry the measurable facets for every shot regardless.
-  const frameIndices = new Set(selectFrameIndices(shots.length));
-  const wanted = shots.filter((_, i) => frameIndices.has(i)).map((s) => s.id as string);
-
-  const framesByShot = new Map<string, string>();
-  if (wanted.length > 0) {
-    const { data: frames } = await admin
-      .from("shot_frames")
-      .select("shot_id, storage_path, is_representative, timestamp_seconds")
-      .in("shot_id", wanted)
-      .order("timestamp_seconds");
-    for (const frame of frames ?? []) {
-      const shotId = frame.shot_id as string;
-      // Prefer the representative frame; otherwise the first one we saw.
-      if (frame.is_representative || !framesByShot.has(shotId)) {
-        framesByShot.set(shotId, frame.storage_path as string);
-      }
-    }
-  }
-
-  const inputs: SegmentShotInput[] = await Promise.all(
-    shots.map(async (shot, i) => {
-      const parsed = ShotMetadataSchema.safeParse(shot.metadata ?? {});
-      let image: { buffer: Buffer; contentType: string } | null = null;
-      const path = frameIndices.has(i) ? framesByShot.get(shot.id as string) : undefined;
-      if (path) {
-        try {
-          image = await fetchAnalysisImage(await signedUrl(admin, path));
-        } catch (e) {
-          // A missing frame degrades the prompt; it must not fail the segment.
-          console.error("breakdown frame", shot.id, e instanceof Error ? e.message : e);
-        }
-      }
-      return {
-        shotIndex: shot.shot_index as number,
-        startSeconds: Number(shot.start_seconds),
-        endSeconds: Number(shot.end_seconds),
-        metadata: parsed.success ? parsed.data : null,
-        image,
-      };
-    })
-  );
+  const inputs = await loadSegmentFrames(admin, shots as never, MAX_BREAKDOWN_FRAMES);
 
   const [{ data: preferences }, { data: insight }] = await Promise.all([
     video.user_id
@@ -1283,6 +1327,7 @@ export async function runGenerateSegmentBreakdown(
     focus,
     videoTitle: (video.title as string | null) ?? null,
     segmentSeconds,
+    fps: video.fps !== null && video.fps !== undefined ? Number(video.fps) : null,
     preferences: (preferences as never) ?? null,
     insights: (insight?.summary as string | null) ?? null,
   });
@@ -1398,46 +1443,9 @@ export async function runGenerateAiRecreation(
     );
   }
 
-  const frameIndices = new Set(selectFrameIndices(shots.length, MAX_AI_FRAMES));
-  const wanted = shots.filter((_, i) => frameIndices.has(i)).map((s) => s.id as string);
-
-  const framesByShot = new Map<string, string>();
-  if (wanted.length > 0) {
-    const { data: frames } = await admin
-      .from("shot_frames")
-      .select("shot_id, storage_path, is_representative, timestamp_seconds")
-      .in("shot_id", wanted)
-      .order("timestamp_seconds");
-    for (const frame of frames ?? []) {
-      const shotId = frame.shot_id as string;
-      if (frame.is_representative || !framesByShot.has(shotId)) {
-        framesByShot.set(shotId, frame.storage_path as string);
-      }
-    }
-  }
-
-  const inputs: SegmentShotInput[] = await Promise.all(
-    shots.map(async (shot, i) => {
-      const parsed = ShotMetadataSchema.safeParse(shot.metadata ?? {});
-      let image: { buffer: Buffer; contentType: string } | null = null;
-      const path = frameIndices.has(i) ? framesByShot.get(shot.id as string) : undefined;
-      if (path) {
-        try {
-          image = await fetchAnalysisImage(await signedUrl(admin, path));
-        } catch (e) {
-          // A missing frame degrades the prompt; it must not fail the answer.
-          console.error("ai recreation frame", shot.id, e instanceof Error ? e.message : e);
-        }
-      }
-      return {
-        shotIndex: shot.shot_index as number,
-        startSeconds: Number(shot.start_seconds),
-        endSeconds: Number(shot.end_seconds),
-        metadata: parsed.success ? parsed.data : null,
-        image,
-      };
-    })
-  );
+  // Same frames the breakdown saw, for the same reason: a generative route has
+  // to know whether the thing it is imitating moves, ramps, freezes or holds.
+  const inputs = await loadSegmentFrames(admin, shots as never, MAX_AI_FRAMES);
 
   const [{ data: preferences }, { data: insight }] = await Promise.all([
     video.user_id

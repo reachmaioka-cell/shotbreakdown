@@ -343,25 +343,26 @@ export type ShotDetail = {
     visibility: string;
     userId: string | null;
     /**
-     * Whether the segment has a breakdown, and whether that breakdown carries a
-     * post-production section. A shot links back to those answers, and a link
-     * that lands on a section which is not there is worse than no link.
+     * Whether the segment has a breakdown, and whether that breakdown carries
+     * the technique spine (how it was made, with every route back to it). A
+     * shot links back to those answers, and a link that lands on a section
+     * which is not there is worse than no link.
      */
     hasBreakdown: boolean;
-    hasPostProduction: boolean;
+    hasTechnique: boolean;
   } | null;
 };
 
-/** True only when the stored breakdown actually carries a non-empty post section. */
-function hasPostProductionSection(raw: unknown): boolean {
-  const post = (raw as { post_production?: Record<string, unknown> } | null)?.post_production;
-  if (!post || typeof post !== "object") return false;
-  const text = [post.key_technique, post.in_camera_or_post]
+/** True only when the stored breakdown carries the technique spine with something in it. */
+function hasTechniqueSection(raw: unknown): boolean {
+  const technique = (raw as { technique?: Record<string, unknown> } | null)?.technique;
+  if (!technique || typeof technique !== "object") return false;
+  const text = [technique.name, technique.evidence]
     .filter((v): v is string => typeof v === "string")
     .join("")
     .trim();
-  const steps = Array.isArray(post.pipeline) ? post.pipeline.length : 0;
-  return text.length > 0 || steps > 0;
+  const routes = Array.isArray(technique.routes) ? technique.routes.length : 0;
+  return text.length > 0 || routes > 0;
 }
 
 /** Load one shot with authorization applied. Returns null when not visible. */
@@ -448,11 +449,12 @@ export async function getShot(
           hasBreakdown: video.breakdown_status === "ready" && !!video.breakdown,
           /*
            * Read off the stored document rather than the status: breakdowns
-           * written before the post-production pass existed are 'ready' and
-           * have no such section, and linking a reader to an anchor that is not
-           * on the page is the exact failure this flag exists to prevent.
+           * written before the technique spine existed are 'ready' and carry
+           * only a note asking to be regenerated, and linking a reader to that
+           * as "how it was made" is the exact failure this flag exists to
+           * prevent.
            */
-          hasPostProduction: hasPostProductionSection(video.breakdown),
+          hasTechnique: hasTechniqueSection(video.breakdown),
         }
       : null,
     playbackUrl,

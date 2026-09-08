@@ -257,6 +257,11 @@ Delete the original **after** the trimmed upload succeeds. The DELETE route alre
 **Goal:** every completed segment carries one breakdown that is specific to what happens in it,
 answers the uploader's focus, and gives each department its part.
 
+> **Superseded in part.** The schema below is the v2 shape this phase shipped with. It was
+> consolidated to v3 on 2026-09-08 after the first real breakdown came back at 4,500 words; see
+> [Consolidation to v3](#consolidation-to-v3-the-technique-spine) at the end of this document for
+> the shape that is now in `lib/validation.ts`.
+
 #### 3.1 Schema (`lib/validation.ts`)
 
 ```ts
@@ -765,3 +770,70 @@ four public marketing URLs.
 3. Deploy a preview, run `npm run http:smoke <preview-url>`, then upload one real segment with
    a question and read the breakdown.
 4. Promote, and repeat step 3 once against production.
+
+## Consolidation to v3: the technique spine
+
+Added 2026-09-08, after reading the first real breakdown end to end.
+
+**What was wrong, measured.** Ken's seven-second Avenida Paulista segment (one shot, question
+"how do they do this effect") came back at 4,561 words. The same facts appeared at four to nine
+altitudes: "tripod" 17 times across 8 sections, the subject's red shirt and the red lane 27 times
+across 9. `setting`, `approach`, `shot_list`, `prep_checklist`, `budget_tiers`, `common_mistakes`
+and `minimum_crew` each restated the departments, and the departments restated the post section.
+
+**What was wrong, technically.** v2 committed to "in-camera long exposure, no post" and buried the
+time-remap route in a footnote. At 24fps one frame cannot be exposed longer than 1/24s; the
+streaks in the frames span a lane width, which needs roughly 1/4s. So the look was made either
+from long-exposure stills sequenced into video or from normal footage time-remapped with frame
+blending or optical flow, and the reader was told neither route as a recipe. The model had also
+been shown exactly one frame of the single shot, so it could not see whether anything moved.
+
+**What changed.**
+
+- `SegmentBreakdownSchema` (`lib/validation.ts`) is now `title, what_happens (≤60 words),
+  focus_answer, technique, shot_sequence, departments, difficulty, crew (≤24), kit.minimum /
+  kit.full (≤40 each)`. `technique` is `{name (≤20), evidence (≤80), routes[1..3]}` and each route
+  is a complete recipe: `{name: "In post: …" | "In camera: …" | "Hybrid: …", when, steps[3..8]
+  (≤40 words each, naming the software, a free equivalent and real values), gives_up}`.
+  Department briefs are `{role, headline (≤24), steps[0..5], pitfalls[0..2]}`; the gear list is
+  gone, kit is named inside the step that uses it. The retired keys stay optional on
+  `StoredSegmentBreakdownSchema` so old rows still parse; they are not rendered. Word ceilings
+  are stated in the prompt and enforced again by `clampWords` in the normalizer, which drops
+  whole sentences before it drops words. Compiled grammar: 1,893 bytes.
+- `lib/prompts/segment.ts` is `segment-v3`: PHYSICS FIRST with the file's fps threaded in
+  (frame exposure ≤ 1/fps, so streaks longer than that were made in post or from stills),
+  FRAMES OF ONE SHOT ARE IN TIME ORDER — COMPARE THEM, say each thing once, the used route first
+  and every other route as an equal recipe, and an ambiguity rule: when two makings are
+  consistent with the frames, say so and let the routes carry both.
+- `loadSegmentFrames` (`lib/pipeline/stages.ts`) replaces one-representative-frame-per-shot: every
+  candidate frame of every shot in time order, budgeted across shots by `planFrameBudget` and
+  spread by `spreadFrames` inside the 12-frame cap. The AI recreation pass reads the same frames
+  and its prompt (`ai-recreation-v2`) carries the same compare-the-frames rule.
+- `components/segment/segment-breakdown.tsx` renders five things in order: the read (title,
+  what happens, difficulty, crew), the answer under the question that was asked, **How it was
+  made** (`#how-it-was-made`: technique, evidence, the used route open, other routes closed),
+  a departments accordion (one line per department until opened; an idle department is a flat
+  line with no drawer), and the shot sequence only when there is more than one shot. Legacy rows
+  show a one-line note asking to be regenerated where the technique would be. Shot pages and the
+  shot overlay deep-link to `#how-it-was-made` only when the row carries a technique
+  (`hasTechnique` in `lib/shots.ts`).
+
+**Result on the same segment.** 1,935 words (−58%), of which 989 sit in the departments
+accordion and are off-screen until opened. The technique now reads "Still subject amid blurred
+traffic: long-exposure stills sequenced into 24fps video", cites the frame comparison it made,
+and carries "In post: high-ratio optical-flow time remap of normal video" as a full five-step
+route (Speed 800–1600%, Time Interpolation: Optical Flow; Resolve Retime Process > Optical Flow;
+subject on a separate 100% layer; DirectionalBlur on the seams) beside the stills route.
+
+**Verified by running (2026-09-08).** `tsc`, `eslint`, `next build` clean; `vitest` 201 tests in 8
+files, including the new `tests/segment-breakdown.test.tsx` (react-dom/server render of a v3
+one-shot row, a three-shot row and a legacy-shaped row: section order, folded routes, no sequence
+for one shot, no retired text on screen or in the flight payload) and `compactBreakdown` tests;
+`npm run security:audit` 87/87; `segment:journey` 37/37; `full:journey` on a 15s clip trimmed 3–9s,
+28/28; `pipeline:smoke` on the Paulista clip, healthy. One caveat worth knowing: the smoke's first
+run failed on a 10-minute wait because a second worker process was draining the same local queue
+and claimed the smoke's ingest job; with the queue to itself it passes in about two minutes. Run
+one worker locally. Both real rows were regenerated on the final prompt and normalizer: the
+Paulista row is 1,702 words with zero clamped fields, the demo title sequence 2,029 words, zero
+clamped. The AI route now folds to one line once written and opens on click; it opens itself only
+in the session that asked for it.

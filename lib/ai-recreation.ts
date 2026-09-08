@@ -5,11 +5,13 @@ import { formatKnowledgeBlock, retrieveKnowledge } from "@/lib/knowledge";
 import { inferTagsFromText } from "@/lib/knowledge-query";
 import { formatAboutFilmmaker, type UserPreferences } from "@/lib/preferences";
 import { AI_RECREATION_PROMPT_VERSION, aiRecreationSystemPrompt } from "@/lib/prompts/ai-recreation";
+import { formatTimecode } from "@/lib/shot-format";
 import {
   compactRecord,
   MAX_BREAKDOWN_FRAMES,
   shotTimecode,
   toImageBlock,
+  type SegmentFrame,
   type SegmentShotInput,
 } from "@/lib/segment-breakdown";
 import {
@@ -38,24 +40,54 @@ export class AiRecreationError extends Error {
   }
 }
 
+type CompactTechnique = {
+  name?: string;
+  evidence?: string;
+  routes?: Array<{ name: string; steps: string[] }>;
+};
+
+/**
+ * How the look was made, as far as the generative route needs to know.
+ *
+ * A route's `when` and `gives_up` compare camera routes against each other,
+ * which is a choice nobody prompting a model gets to make; the name and the
+ * steps are what tell the model whether the smear on screen came from a shutter
+ * or from frame blending, and that is what its own prompts have to reproduce.
+ *
+ * A row written before the technique spine has no technique; the key is left
+ * out entirely, because an empty object would read as "nothing was done to
+ * this", which is a claim, not an absence.
+ */
+function compactTechnique(breakdown: StoredSegmentBreakdown): CompactTechnique | undefined {
+  const { technique } = breakdown;
+  if (!technique) return undefined;
+  return {
+    name: technique.name,
+    evidence: technique.evidence,
+    routes: technique.routes.map((route) => ({ name: route.name, steps: route.steps })),
+  };
+}
+
 /**
  * The camera-route answer, reduced to what the generative route can use.
  *
- * The prompts, the shot order, the look and what post already had to do are all
- * evidence here. Budget tiers, prep checklists and gear lists are not: nobody
- * generating this segment is renting a 10-stop ND, and paying to send those
- * fields buys a worse answer, not a better one.
+ * The look, how it was made and what each department was doing are evidence
+ * here. The shot sequence is not, because every shot's facet record is already
+ * sent alongside this and the sequence would restate it. Kit and crew are not:
+ * nobody generating this segment is renting a 10-stop ND, and paying to send
+ * those fields buys a worse answer, not a better one.
+ *
+ * Exported for the test seam. JSON.stringify drops undefined-valued keys, which
+ * is how an empty focus answer and an absent technique are omitted rather than
+ * sent as "" and {}.
  */
-function compactBreakdown(breakdown: StoredSegmentBreakdown): string {
+export function compactBreakdown(breakdown: StoredSegmentBreakdown): string {
   return JSON.stringify({
     title: breakdown.title,
     what_happens: breakdown.what_happens,
-    setting: breakdown.setting,
-    approach: breakdown.approach,
     difficulty: breakdown.difficulty,
     focus_answer: breakdown.focus_answer || undefined,
-    shot_sequence: breakdown.shot_sequence,
-    post_production: breakdown.post_production,
+    technique: compactTechnique(breakdown),
     departments: breakdown.departments.map((d) => ({
       role: d.role,
       headline: d.headline,
@@ -80,7 +112,18 @@ export async function generateAiRecreation(input: {
     throw new AiRecreationError("ANTHROPIC_API_KEY is not configured", false);
   }
 
-  const withImages = input.shots.filter((s) => s.image);
+  // Same frame set the breakdown saw: every candidate frame of a shot in time
+  // order, so the generative route knows whether the thing it imitates moves,
+  // ramps, freezes or holds. A caller that still passes one `image` gets it
+  // treated as a single frame at the shot's start.
+  const framesOf = (shot: SegmentShotInput): SegmentFrame[] =>
+    shot.images && shot.images.length > 0
+      ? shot.images
+      : shot.image
+        ? [{ ...shot.image, timestampSeconds: shot.startSeconds }]
+        : [];
+  const withImages = input.shots.filter((s) => framesOf(s).length > 0);
+  const frameCount = withImages.reduce((n, s) => n + framesOf(s).length, 0);
 
   const hintText = [
     input.videoTitle,
@@ -104,7 +147,7 @@ export async function generateAiRecreation(input: {
 
   const system = aiRecreationSystemPrompt({
     shotCount: input.shots.length,
-    frameCount: withImages.length,
+    frameCount,
     segmentSeconds: input.segmentSeconds,
     focus: input.focus ?? null,
     videoTitle: input.videoTitle ?? null,
@@ -118,11 +161,14 @@ export async function generateAiRecreation(input: {
   // writes are targeted by shot, so that attribution has to be right.
   const content: Anthropic.ContentBlockParam[] = [];
   for (const shot of withImages) {
-    content.push({
-      type: "text",
-      text: `Shot ${shot.shotIndex} · ${shotTimecode(shot.startSeconds, shot.endSeconds)} · representative frame`,
+    const frames = framesOf(shot);
+    frames.forEach((frame, i) => {
+      content.push({
+        type: "text",
+        text: `Shot ${shot.shotIndex} · ${shotTimecode(shot.startSeconds, shot.endSeconds)} · frame ${i + 1} of ${frames.length} at ${formatTimecode(frame.timestampSeconds)}`,
+      });
+      content.push(toImageBlock(frame.buffer, frame.contentType) as Anthropic.ImageBlockParam);
     });
-    content.push(toImageBlock(shot.image!.buffer, shot.image!.contentType) as Anthropic.ImageBlockParam);
   }
 
   content.push({
@@ -188,7 +234,7 @@ async function callClaude(
  *
  * Local rather than in lib/validation.ts: that file is owned by another pass
  * right now, and this normalizer is not shared with anything else yet. If a
- * second caller appears it belongs beside normalizeSegmentPost.
+ * second caller appears it belongs beside normalizeSegmentBreakdown.
  */
 function cleanList(values: string[] | undefined, max: number, maxLen = 400): string[] {
   const seen = new Set<string>();

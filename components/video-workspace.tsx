@@ -457,9 +457,7 @@ export function VideoWorkspace({
                 </span>
               }
             />
-          ) : (
-            <Row label="Source range" value="The whole file was analysed" />
-          )}
+          ) : null}
           <Row
             label="Original file"
             value={
@@ -472,6 +470,16 @@ export function VideoWorkspace({
           <Row label="Added" value={new Date(video.createdAt).toLocaleDateString()} />
           <Row label="Visibility" value={humanize(video.visibility)} />
           <Row label="Your question" value={video.focus} />
+          {/*
+            Reference material from the breakdown. It sits here so the reading
+            column stays the recipe; nobody reads a kit list top to bottom, they
+            look it up. Rows written before the technique spine carry none of
+            these, and Row drops an empty value, so a legacy row shows nothing
+            rather than an empty label.
+          */}
+          <Row label="Crew" value={breakdown?.crew} />
+          <Row label="Kit, minimum" value={breakdown?.kit?.minimum} />
+          <Row label="Kit, full" value={breakdown?.kit?.full} />
         </dl>
       ) : null}
     </Tabs>
@@ -707,7 +715,6 @@ export function VideoWorkspace({
               breakdown={breakdown}
               shots={breakdownShots}
               openRole={openRole}
-              segmentSeconds={video.durationSeconds}
             />
           </div>
         ) : active || video.status === "failed" ? (
@@ -747,9 +754,11 @@ export function VideoWorkspace({
           <div className="mt-10">
             <h2 className="eyebrow mb-2">
               Detected shots
-              <span className="ml-2 normal-case tracking-normal text-text-3">
-                ← → to step through
-              </span>
+              {shots.length > 1 ? (
+                <span className="ml-2 normal-case tracking-normal text-text-3">
+                  ← → to step through
+                </span>
+              ) : null}
             </h2>
             <div className="shot-grid shot-grid-sm">
               {shots.map((shot) => (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAiRecreation } from "@/lib/ai-recreation";
+import { compactBreakdown, normalizeAiRecreation } from "@/lib/ai-recreation";
 import {
   AI_FEASIBILITY,
   AI_RECREATION_VERSION,
@@ -7,6 +7,7 @@ import {
   StoredAiRecreationSchema,
   type AiRecreation,
   type StoredAiRecreation,
+  type StoredSegmentBreakdown,
 } from "@/lib/validation";
 
 /** A schema-valid model response. Fields a test does not care about are empty. */
@@ -207,5 +208,66 @@ describe("normalizeAiRecreation", () => {
   it("still parses against the schema after normalizing", () => {
     const out = normalizeAiRecreation(sampleRecreation());
     expect(AiRecreationSchema.safeParse(out).success).toBe(true);
+  });
+});
+
+/** A stored breakdown in the v3 shape, for the compaction seam. */
+function storedBreakdown(overrides: Partial<StoredSegmentBreakdown> = {}): StoredSegmentBreakdown {
+  return {
+    title: "Paulista median",
+    what_happens: "A man stands still while traffic smears past.",
+    focus_answer: "",
+    difficulty: "easy",
+    technique: {
+      name: "Long-exposure stills sequenced into video",
+      evidence: "Smooth continuous smears, no stepped ghosting.",
+      routes: [
+        { name: "In camera: stills", when: "You own a stills body.", steps: ["ND filter.", "1s exposure."], gives_up: "" },
+        { name: "In post: time remap", when: "Only video exists.", steps: ["Speed 800%.", "Optical Flow."], gives_up: "Edge ghosting." },
+      ],
+    },
+    shot_sequence: [
+      { shot_index: 0, timecode: "0:00-0:07", what_happens: "x", how_it_was_made: "y", cut_note: "" },
+    ],
+    departments: [
+      { role: "camera", headline: "Lock off and expose long.", steps: ["Tripod.", "ND."], pitfalls: ["Wind shake."] },
+    ],
+    crew: "2",
+    kit: { minimum: "a", full: "b" },
+    version: 1,
+    prompt_version: "segment-v3",
+    focus: null,
+    generated_at: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("compactBreakdown", () => {
+  it("sends the look, the technique and the department briefs, and nothing else", () => {
+    const out = JSON.parse(compactBreakdown(storedBreakdown()));
+    expect(Object.keys(out).sort()).toEqual(["departments", "difficulty", "technique", "title", "what_happens"]);
+    // Routes are reduced to name and steps: the when/gives-up lines are for a reader choosing a route.
+    expect(out.technique).toEqual({
+      name: "Long-exposure stills sequenced into video",
+      evidence: "Smooth continuous smears, no stepped ghosting.",
+      routes: [
+        { name: "In camera: stills", steps: ["ND filter.", "1s exposure."] },
+        { name: "In post: time remap", steps: ["Speed 800%.", "Optical Flow."] },
+      ],
+    });
+    expect(out.departments).toEqual([
+      { role: "camera", headline: "Lock off and expose long.", steps: ["Tripod.", "ND."] },
+    ]);
+  });
+
+  it("sends focus_answer only when there is one", () => {
+    expect("focus_answer" in JSON.parse(compactBreakdown(storedBreakdown()))).toBe(false);
+    expect(JSON.parse(compactBreakdown(storedBreakdown({ focus_answer: "Yes." }))).focus_answer).toBe("Yes.");
+  });
+
+  it("leaves technique out entirely on a row written before the spine", () => {
+    const text = compactBreakdown(storedBreakdown({ technique: undefined }));
+    expect("technique" in JSON.parse(text)).toBe(false);
+    expect(text).not.toContain("undefined");
   });
 });

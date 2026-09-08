@@ -169,8 +169,9 @@ async function main() {
       });
     }
 
-    // The breakdown is the product. It must exist, cover all nine departments,
-    // and carry one sequence entry per shot.
+    // The breakdown is the product. It must exist, cover all nine departments
+    // in order, carry one sequence entry per shot, and name the technique with
+    // at least one complete route back to it: the spine the page is built on.
     const { readSegmentBreakdown, DEPARTMENTS } = await import("../lib/validation");
     if (finalVideo?.breakdown_status !== "ready") {
       problems.push(
@@ -186,6 +187,9 @@ async function main() {
       if (missing.length > 0) problems.push(`breakdown missing departments: ${missing.join(", ")}`);
       if (roles.length !== DEPARTMENTS.length) {
         problems.push(`breakdown has ${roles.length} departments, expected ${DEPARTMENTS.length}`);
+      }
+      if (roles.join(",") !== DEPARTMENTS.join(",")) {
+        problems.push("breakdown departments are not in canonical order");
       }
       if (breakdown.shot_sequence.length !== (shots?.length ?? 0)) {
         problems.push(
@@ -205,10 +209,28 @@ async function main() {
         problems.push("no focus was given but focus_answer is populated");
       }
 
+      // The stored schema lets technique be absent so rows written before the
+      // spine still read; a row this run just wrote has no such excuse.
+      const technique = breakdown.technique;
+      if (!technique) {
+        problems.push("breakdown has no technique");
+      } else {
+        if (!technique.name.trim()) problems.push("technique.name is empty");
+        if (technique.routes.length < 1) problems.push("technique has no routes");
+        const firstSteps = technique.routes[0]?.steps.length ?? 0;
+        if (firstSteps < 3) {
+          problems.push(`the first route has ${firstSteps} steps, expected at least 3`);
+        }
+      }
+
       console.log("\nBREAKDOWN");
       console.log(`  title:      ${breakdown.title}`);
-      console.log(`  difficulty: ${breakdown.difficulty}   crew: ${breakdown.minimum_crew}`);
+      console.log(`  difficulty: ${breakdown.difficulty}   crew: ${breakdown.crew ?? "(none)"}`);
       console.log(`  happens:    ${breakdown.what_happens.slice(0, 160)}`);
+      console.log(`  technique:  ${technique?.name ?? "(none)"}`);
+      for (const route of technique?.routes ?? []) {
+        console.log(`    - ${route.name} (${route.steps.length} steps)`);
+      }
       if (FOCUS) {
         console.log(`  asked:      ${FOCUS}`);
         console.log(`  answered:   ${breakdown.focus_answer.slice(0, 300)}`);
@@ -217,7 +239,6 @@ async function main() {
         breakdown.departments.map((d) => ({
           role: d.role,
           steps: d.steps.length,
-          gear: d.gear.length,
           pitfalls: d.pitfalls.length,
           headline: d.headline.slice(0, 62),
         }))

@@ -23,6 +23,8 @@ import {
 import { planLimits } from "../lib/plans";
 
 const BASE = process.argv[2] ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://127.0.0.1:3002";
+/** A route names its phase, and 'Camera + post:' is the whole making, capture then post. */
+const ROUTE_PREFIX = /^(Camera \+ post|In camera|In post):/;
 
 let passed = 0;
 let failed = 0;
@@ -340,6 +342,11 @@ async function main() {
       "the first route is a complete recipe (three or more steps)",
       (technique?.routes[0]?.steps.length ?? 0) >= 3,
       { steps: technique?.routes[0]?.steps.length ?? 0 }
+    );
+    check(
+      "the first route names its phase (Camera + post / In camera / In post)",
+      ROUTE_PREFIX.test(technique?.routes[0]?.name ?? ""),
+      { name: technique?.routes[0]?.name }
     );
 
     step("7. The status endpoint carries the segment fields");

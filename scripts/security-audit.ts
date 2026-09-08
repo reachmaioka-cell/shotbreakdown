@@ -151,6 +151,8 @@ const PROTECTED_SHOT_COLUMNS: Record<string, unknown> = {
   thumbnail_path: "someone-else/private.jpg",
   metadata: { forged: true },
   representative_timestamp: 42,
+  // Present only after migration 0029; skipped automatically when absent.
+  motion_profile: { fps: 1, scores: [1] },
 };
 
 /** Fields the owner must keep control of. Blocking these would be a bug. */

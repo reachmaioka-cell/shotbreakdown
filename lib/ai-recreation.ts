@@ -9,6 +9,7 @@ import { formatTimecode } from "@/lib/shot-format";
 import {
   compactRecord,
   MAX_BREAKDOWN_FRAMES,
+  motionBlock,
   shotTimecode,
   toImageBlock,
   type SegmentFrame,
@@ -170,6 +171,9 @@ export async function generateAiRecreation(input: {
       content.push(toImageBlock(frame.buffer, frame.contentType) as Anthropic.ImageBlockParam);
     });
   }
+
+  const motion = motionBlock(input.shots);
+  if (motion) content.push({ type: "text", text: motion });
 
   content.push({
     type: "text",

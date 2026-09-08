@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  compactRecord,
+  motionBlock,
   MAX_BREAKDOWN_FRAMES,
   SEGMENT_PROMPT_VERSION,
   selectFrameIndices,
+  type SegmentShotInput,
 } from "@/lib/segment-breakdown";
 import { formatDurationLimit } from "@/lib/plans";
+import { segmentSystemPrompt } from "@/lib/prompts/segment";
+import { describeMotion, type MotionProfile } from "@/lib/video/motion";
 import {
   DEPARTMENTS,
   SEGMENT_BREAKDOWN_VERSION,
@@ -219,6 +224,9 @@ describe("normalizeSegmentBreakdown departments", () => {
   });
 });
 
+/** The step ceiling the normalizer enforces, mirrored so a change here is deliberate. */
+const WORDS_STEP = 60;
+
 describe("normalizeSegmentBreakdown word ceilings", () => {
   /*
    * The prompt asks for these ceilings; the normalizer guarantees them. The
@@ -258,6 +266,22 @@ describe("normalizeSegmentBreakdown word ceilings", () => {
     expect(step.split(" ")).toHaveLength(60);
     expect(step.endsWith("…")).toBe(true);
     expect(step).not.toContain("w60");
+  });
+
+  it("never cuts a step in the middle of a word", () => {
+    // The character guard fired before the word ceiling and chopped a route
+    // step at "to match the ramped dips in the moti", losing the value the
+    // step existed to carry.
+    const long = `${"word ".repeat(600)}Speed/Duration 800%.`;
+    const out = normalizeTechnique({
+      name: "n",
+      evidence: "e",
+      routes: [{ name: "In post: r", when: "w", steps: [long], gives_up: "" }],
+    });
+    const step = out.routes[0].steps[0];
+    expect(step.endsWith("…")).toBe(true);
+    expect(step.replace(/…$/, "").split(" ").every((w) => w === "word")).toBe(true);
+    expect(step.split(" ")).toHaveLength(WORDS_STEP);
   });
 
   it("cuts at the last sentence end rather than mid-clause when one falls in the back half", () => {
@@ -355,9 +379,14 @@ describe("normalizeTechnique", () => {
     const out = normalizeTechnique(
       sampleTechnique({
         routes: [
-          route("In post: frame blending", ["Retime to 600%.", "Frame Blending on.", "Render."]),
+          route("Camera + post: 1/8s time-lapse, ramped and reversed", [
+            "Interval 1/8s.",
+            "Speed 800%, Optical Flow.",
+            "Reverse at -800%.",
+          ]),
           route("In camera: long exposure stills", []),
           route("In camera: nothing written", ["   ", ""]),
+          // A v3 row: the prefix is retired, the name is left alone.
           route("Hybrid: stills plate over blended video", ["Shoot stills.", "Blend the video.", "Comp."]),
           route("In camera: ND and a slow shutter", ["Fit a 10-stop ND.", "Shoot at 1/4s.", "Hold still."]),
           route("In post: echo", ["Add Echo.", "Six echoes.", "Decay to taste."]),
@@ -366,7 +395,7 @@ describe("normalizeTechnique", () => {
     );
 
     expect(out.routes.map((r) => r.name)).toEqual([
-      "In post: frame blending",
+      "Camera + post: 1/8s time-lapse, ramped and reversed",
       "Hybrid: stills plate over blended video",
       "In camera: ND and a slow shutter",
     ]);
@@ -587,5 +616,73 @@ describe("formatDurationLimit", () => {
     [120, "2 minutes"],
   ])("formatDurationLimit(%i) === %s", (seconds, expected) => {
     expect(formatDurationLimit(seconds)).toBe(expected);
+  });
+});
+
+describe("motionBlock", () => {
+  const profile: MotionProfile = {
+    fps: 6,
+    scores: [0.02, 0.025, 0.022, 0.001, 0.001, 0.001, 0.024, 0.03, 0.028, 0.026, 0.021, 0.02],
+  };
+  const shot = (shotIndex: number, motion?: MotionProfile | null): SegmentShotInput => ({
+    shotIndex,
+    startSeconds: shotIndex * 8,
+    endSeconds: shotIndex * 8 + 7.4,
+    metadata: null,
+    motion,
+  });
+
+  /*
+   * The line is its own block rather than a field of the record: the frames
+   * dominate the model's reading, and a ramp through zero inside a line of
+   * JSON was read past. It must therefore not also be in the record.
+   */
+  it("is one line per measured shot, in describeMotion's words, and not in the record", () => {
+    const block = motionBlock([shot(0, profile), shot(1, profile)]);
+    expect(block).toContain("Motion profile of each shot");
+    expect(block).toContain(`Shot 0: ${describeMotion(profile)}`);
+    expect(block).toContain("Shot 1: ");
+    expect(block).toContain("dips to near zero at 0.5-1s");
+    expect(block?.trimEnd().endsWith("direction of movement not readable")).toBe(true);
+    expect("motion" in JSON.parse(compactRecord(shot(0, profile)))).toBe(false);
+  });
+
+  it("leaves out a shot with nothing to read, and is null when no shot has any", () => {
+    const block = motionBlock([shot(0), shot(1, null), shot(2, { fps: 12, scores: [0.02] }), shot(3, profile)]);
+    expect(block).toContain("Shot 3: ");
+    for (const missing of ["Shot 0: ", "Shot 1: ", "Shot 2: "]) expect(block).not.toContain(missing);
+    expect(motionBlock([shot(0), shot(1, { fps: 12, scores: [0.02] })])).toBeNull();
+    expect(motionBlock([])).toBeNull();
+  });
+});
+
+describe("segment prompt v4", () => {
+  const prompt = segmentSystemPrompt({ shotCount: 1, frameCount: 6, segmentSeconds: 7.4, fps: 24 });
+
+  it("is versioned v4", () => {
+    expect(SEGMENT_PROMPT_VERSION).toBe("segment-v4");
+  });
+
+  /**
+   * The real making of the reference clip was a chain, capture then post; v3
+   * split it into two alternatives and lost the post half. Route 1 is now the
+   * chain, and the retired 'Hybrid:' prefix must not be offered again.
+   */
+  it("makes route 1 the whole making under one of three prefixes", () => {
+    expect(prompt).toContain("THE FIRST ROUTE IS HOW IT WAS ACTUALLY MADE, END TO END");
+    expect(prompt).toContain("'Camera + post:', 'In camera:', 'In post:'");
+    expect(prompt).not.toContain("Hybrid:");
+  });
+
+  it("teaches the motion line and takes the uploader's account as fact", () => {
+    expect(prompt).toContain("MOTION PROFILE");
+    expect(prompt).toContain("a rewind cannot be confirmed from the frames");
+    expect(prompt).toContain("THE UPLOADER'S ACCOUNT");
+    expect(prompt).toContain("The uploader has seen the source; you have not.");
+  });
+
+  it("bounds the shutter by the frame rate and names interval capture past it", () => {
+    expect(prompt).toContain("1/24s");
+    expect(prompt).toContain("interval or time-lapse capture");
   });
 });

@@ -837,3 +837,64 @@ one worker locally. Both real rows were regenerated on the final prompt and norm
 Paulista row is 1,702 words with zero clamped fields, the demo title sequence 2,029 words, zero
 clamped. The AI route now folds to one line once written and opens on click; it opens itself only
 in the session that asked for it.
+
+### Motion profile and chain routes (2026-09-08)
+
+Ken told us how the Paulista clip was actually made: one long time-lapse take at about 1/8s per
+frame (interval capture, each frame its own exposure), then speed ramps and rewinds in post. Both
+earlier breakdowns had half of it. v2 said in-camera, no post. v3 called the capture "stills
+sequenced" (which a time-lapse mode is) but offered the time remap as an *alternative* route, when
+it is the second half of the real recipe. Two causes: the prompt asked for a camera route and a
+post route, so the model split a chain into alternatives; and the model was shown a handful of
+stills, which cannot show a ramp, a hold or a reverse.
+
+**What was built.** `measureMotion` (`lib/video/ffmpeg.ts`) runs one extra ffmpeg pass per
+segment at the source frame rate — `tblend=all_mode=difference` + `signalstats`, mean absolute
+luma change per frame, 0..1 — and `lib/video/motion.ts` slices it per shot, compacts it, and
+summarises it: shape, spikes, and dips to near zero, each dip marked **ramped** (motion slopes into
+the stop and out of it: a speed ramp through zero, where a reverse turns around) or **stepped**
+(full motion, nothing, full motion: a held frame). Deliberately not ffmpeg's `scene` score, which
+measures the change in difference and reads ~0 for steady motion. Stored in `shots.motion_profile`
+(migration 0029, pipeline-owned, guarded by `protect_shot_columns`), written by ingest, backfilled
+by `npm run db:backfill-motion`, and sent to both prompts as one ≤60-word line per shot. On the
+Paulista clip: dips at 2.8–3.1s, 4.7–4.8s and 6.3–6.5s, all ramped — the turnarounds.
+
+**Prompt v4.** Route 1 is how it was actually made, end to end: `Camera + post:` as one recipe
+when capture and post were both decisions; alternatives swap a phase. The motion line's dips carry
+the timecodes for ramps and holds into route 1's steps. If the uploader's note states the making,
+it is taken as fact unless the frames contradict it. `Hybrid:` is retired. AI prompt v3 reads the
+same line and puts ramps and reverses in the NLE step, not in a video-model prompt.
+
+**Verified by running.** tsc, eslint, 239 tests (32 new in `tests/motion.test.ts`, two of them
+on the real clip through the bundled ffmpeg), security audit 88/88 (`motion_profile` refused from
+a client), migration applied locally, backfill on both rows, pipeline smoke with the new
+assertion. With Ken's account in the note, route 1 came back as "Camera + post: locked time-lapse
+at 1/8s, speed-ramped and reversed in NLE" with the sequence import, Speed/Duration, the reversed
+section and the ramp through 0% at the turnaround.
+
+**What it took to make the reading stable.** Three intermediate runs got the capture half right and
+the post half wrong in different ways, so the rules were tightened until repeated runs agreed:
+
+- The physics rule now binds the ROUTE, not just the reading. A shutter slower than 1/fps cannot
+  appear in a route that shoots a continuous take — it means interval capture, whose frames must
+  then be assembled, which is a post phase. So such a route is `Camera + post:`, never `In camera:`
+  with an edit bolted on. One run had produced "In camera: long-shutter locked wide, single
+  7-second take" at 1/4s on 24fps, which is the v2 error exactly.
+- A dip is measured, so "a quieter moment" cannot explain it: near zero means the whole picture
+  stopped, and thinner traffic lowers the level without taking it to a tenth of it while smears are
+  still in frame. The model may still reject the remap, but only on something in the frames.
+- The motion line moved out of the JSON record into its own block beside the frames, one per shot,
+  shared by both prompts. The frames dominate the model's reading and a ramp buried in a JSON field
+  was read past.
+
+Judged by generating the same segment three times without writing to the database: before, one run
+in three named the remap; after, three in three read "Camera + post: interval capture at a long
+shutter, assembled and speed-ramped" with Time Remapping keyframes at 2.8s, 4.7s and 6.3s — the
+measured dips. Direction stays unclaimed, as designed: a ramped dip proves the remap, not which way
+it runs. The shipping row is 2,186 words with two routes; alternatives are capped at one (a third
+only when different in kind) and kept to 3–5 steps, so the document does not grow back.
+
+**A defect this surfaced.** `cleanList` sliced a route step at 320 characters before the word
+ceiling ran, cutting mid-word: the shipping step ended "to match the ramped dips in the moti",
+losing the values it existed to carry. The character cap is now a runaway guard at 2,000, it cuts
+on a word boundary, and the word ceilings govern.

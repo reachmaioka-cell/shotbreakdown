@@ -12,6 +12,7 @@ import {
   type SegmentBreakdown,
   type ShotMetadata,
 } from "@/lib/validation";
+import { describeMotion, type MotionProfile } from "@/lib/video/motion";
 
 export { SEGMENT_PROMPT_VERSION };
 
@@ -80,6 +81,13 @@ export type SegmentShotInput = {
   images?: SegmentFrame[];
   /** The representative frame alone. Kept for callers that still send one. */
   image?: { buffer: Buffer; contentType: string } | null;
+  /**
+   * Frame-to-frame change across the shot. A dozen stills can show that
+   * traffic smeared; they cannot show that it ramped, held and ran backwards
+   * between them, and that post half is what an editor came here for. Null on
+   * rows ingested before the profile was measured.
+   */
+  motion?: MotionProfile | null;
 };
 
 /**
@@ -166,6 +174,27 @@ export function shotTimecode(startSeconds: number, endSeconds: number): string {
  * would drift the moment either prompt learned something about what a
  * department actually needs.
  */
+/**
+ * The motion lines as their own block, or null when nothing was measured.
+ *
+ * Its own block rather than a field of the record: the frames dominate the
+ * model's reading, and a ramp through zero buried in a line of JSON was read
+ * past. One sample is a single frame pair, with no series to read a ramp or a
+ * hold from, so a shot with one is left out.
+ *
+ * Exported because the AI-recreation pass answers the same segment and has to
+ * imitate the same ramps, holds and reverses.
+ */
+export function motionBlock(shots: SegmentShotInput[]): string | null {
+  const lines = shots
+    .filter((shot): shot is SegmentShotInput & { motion: MotionProfile } =>
+      Boolean(shot.motion && shot.motion.scores.length >= 2)
+    )
+    .map((shot) => `Shot ${shot.shotIndex}: ${describeMotion(shot.motion)}`);
+  if (lines.length === 0) return null;
+  return `Motion profile of each shot, measured frame to frame across the whole shot (the frames above are samples; this is what happened between them):\n${lines.join("\n")}`;
+}
+
 export function compactRecord(shot: SegmentShotInput): string {
   const m = shot.metadata;
   const parts: Record<string, unknown> = {
@@ -305,6 +334,9 @@ export async function generateSegmentBreakdown(input: {
       content.push(toImageBlock(frame.buffer, frame.contentType) as Anthropic.ImageBlockParam);
     });
   }
+
+  const motion = motionBlock(input.shots);
+  if (motion) content.push({ type: "text", text: motion });
 
   content.push({
     type: "text",

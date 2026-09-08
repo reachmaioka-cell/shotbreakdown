@@ -740,7 +740,11 @@ export const SegmentShotSchema = z.object({
  * actually do and follows it without reading the others.
  */
 export const TechniqueRouteSchema = z.object({
-  /** "In post: time remap with frame blending" / "In camera: long exposure stills". */
+  /**
+   * "Camera + post: 1/8s time-lapse, ramped and reversed" / "In post: time
+   * remap with frame blending" / "In camera: long exposure stills". Rows from
+   * before v4 carry "Hybrid:"; the name is never rewritten on the way out.
+   */
   name: z.string(),
   /** One line: choose this route when… */
   when: z.string(),
@@ -870,18 +874,24 @@ export type StoredSegmentBreakdown = z.infer<typeof StoredSegmentBreakdownSchema
 
 export const SEGMENT_BREAKDOWN_VERSION = 1;
 
-function cleanList(values: string[] | undefined, max: number, maxLen = 400): string[] {
+/**
+ * `maxLen` is a guard against a runaway string, not the editorial limit: the
+ * word ceilings are, and they run after this. It cuts on a word boundary
+ * because a step that ends "to match the ramped dips in the moti" has lost the
+ * value the reader came for, and a character count cannot know where that is.
+ */
+function cleanList(values: string[] | undefined, max: number, maxLen = 2000): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of values ?? []) {
-    const value = String(raw)
+    const clipped = String(raw)
       // Strip a real list marker — "1.", "2)", "Step 3:" — and nothing else.
       // The lookahead is load-bearing: a route step is where the values live,
       // and without it "1.25x speed" is stored as "25x speed" and "16:9 crop"
       // as "9 crop", silently, with nothing on the page to say the number moved.
       .replace(/^\s*(?:step\s*)?\d+[.):](?!\d)\s*/i, "")
-      .trim()
-      .slice(0, maxLen);
+      .trim();
+    const value = clipped.length <= maxLen ? clipped : clipped.slice(0, clipped.lastIndexOf(" ", maxLen) + 1 || maxLen).trim();
     if (!value) continue;
     const key = value.toLowerCase();
     if (seen.has(key)) continue;
@@ -920,7 +930,7 @@ export function normalizeTechnique(raw: Technique | undefined | null): Technique
     .map((route) => ({
       name: clampWords(route?.name, 18),
       when: clampWords(route?.when, 40),
-      steps: cleanList(route?.steps, 8, 320).map((step) => clampWords(step, WORDS.step)),
+      steps: cleanList(route?.steps, 8).map((step) => clampWords(step, WORDS.step)),
       gives_up: clampWords(route?.gives_up, 40),
     }))
     .filter((route) => route.name && route.steps.length > 0)

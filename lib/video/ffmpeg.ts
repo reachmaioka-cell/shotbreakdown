@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import ffprobeInstaller from "@ffprobe-installer/ffprobe";
+import type { MotionProfile } from "@/lib/video/motion";
 
 const exec = promisify(execFile);
 
@@ -131,6 +132,13 @@ export type SceneChange = { timeSeconds: number; score: number };
  * decode is the slow part and cut detection does not need the detail. Scores
  * come from `showinfo`/`metadata=print` on frames that pass the select filter.
  */
+/**
+ * Frames per second the cut pass samples. Named because the motion pass, which
+ * runs at the source rate, has to know it: a cut found at 12/s could sit on
+ * either of the source frames that sample covered.
+ */
+export const SCENE_SAMPLE_FPS = 12;
+
 export async function detectSceneChanges(
   file: string,
   options: { threshold?: number; maxSeconds?: number } = {}
@@ -143,7 +151,7 @@ export async function detectSceneChanges(
     "-i",
     file,
     "-filter:v",
-    `scale=320:-2,fps=12,select='gt(scene,${threshold})',metadata=print:file=-`,
+    `scale=320:-2,fps=${SCENE_SAMPLE_FPS},select='gt(scene,${threshold})',metadata=print:file=-`,
     "-an",
     "-f",
     "null",
@@ -171,6 +179,58 @@ export async function detectSceneChanges(
   }
 
   return changes.sort((a, b) => a.timeSeconds - b.timeSeconds);
+}
+
+/**
+ * Measure frame-to-frame change across the whole file.
+ *
+ * `tblend=all_mode=difference` replaces each frame with its absolute
+ * difference from the previous one, and `signalstats` then reports that
+ * frame's mean luma: the mean absolute difference between the two frames.
+ * This is deliberately not the select filter's `scene` score, which measures
+ * the change in the difference and reads ~0 for steady motion, so it cannot
+ * show a ramp or a hold. Cut detection keeps its own pass and its own score.
+ *
+ * The `scale,fps` prefix is the cut pass's, verbatim, so both passes keep the
+ * same source frames and a cut lands on a known sample. tblend has nothing to
+ * compare the first frame against and drops it, so sample i is the change
+ * from frame i to frame i+1: the first sample sits at the start of the file
+ * and a cut is the last sample before its shot boundary.
+ */
+export async function measureMotion(
+  file: string,
+  options: { fps?: number; maxSeconds?: number; width?: number } = {}
+): Promise<MotionProfile> {
+  const fps = options.fps ?? 12;
+  const width = options.width ?? 320;
+  // signalstats reports luma in the source's own bit depth and range. An
+  // untrimmed upload skips the re-encode, so a 10-bit phone clip would score
+  // four times a yuv420p one without the conversion; on yuv420p it is a no-op.
+  const args = [
+    "-hide_banner",
+    "-nostats",
+    ...(options.maxSeconds ? ["-t", String(options.maxSeconds)] : []),
+    "-i",
+    file,
+    "-filter:v",
+    `scale=${width}:-2,fps=${fps},format=yuv420p,tblend=all_mode=difference,signalstats,metadata=print:file=-`,
+    "-an",
+    "-f",
+    "null",
+    "-",
+  ];
+
+  const { stdout, stderr } = await runFfmpeg(args);
+  // `file=-` writes to stdout; a build that logs it instead lands on stderr.
+  const text = stdout.includes("pts_time:") ? stdout : stderr;
+
+  const scores: number[] = [];
+  for (const line of text.split("\n")) {
+    const yavg = line.match(/^lavfi\.signalstats\.YAVG=([0-9.]+)/);
+    if (yavg) scores.push(Number((Number(yavg[1]) / 255).toFixed(4)));
+  }
+
+  return { fps, scores };
 }
 
 /**
@@ -315,7 +375,7 @@ export type FrameStats = { meanLuma: number; stdevLuma: number };
 
 /** Mean/stdev luma via signalstats — used to reject black, blown or flat frames. */
 export async function frameStats(file: string): Promise<FrameStats> {
-  const { stderr } = await runFfmpeg([
+  const { stdout, stderr } = await runFfmpeg([
     "-hide_banner",
     "-nostats",
     "-i",
@@ -328,9 +388,11 @@ export async function frameStats(file: string): Promise<FrameStats> {
     "null",
     "-",
   ]);
-  const mean = stderr.match(/lavfi\.signalstats\.YAVG=([0-9.]+)/);
-  const low = stderr.match(/lavfi\.signalstats\.YLOW=([0-9.]+)/);
-  const high = stderr.match(/lavfi\.signalstats\.YHIGH=([0-9.]+)/);
+  // `file=-` writes to stdout; a build that logs it instead lands on stderr.
+  const text = `${stdout}\n${stderr}`;
+  const mean = text.match(/lavfi\.signalstats\.YAVG=([0-9.]+)/);
+  const low = text.match(/lavfi\.signalstats\.YLOW=([0-9.]+)/);
+  const high = text.match(/lavfi\.signalstats\.YHIGH=([0-9.]+)/);
   const meanLuma = mean ? Number(mean[1]) : 128;
   const spread = low && high ? Number(high[1]) - Number(low[1]) : 128;
   return { meanLuma, stdevLuma: spread };

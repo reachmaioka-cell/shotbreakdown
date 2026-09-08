@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compactBreakdown, normalizeAiRecreation } from "@/lib/ai-recreation";
+import { AI_RECREATION_PROMPT_VERSION, aiRecreationSystemPrompt } from "@/lib/prompts/ai-recreation";
+import { SEGMENT_PROMPT_VERSION } from "@/lib/prompts/segment";
 import {
   AI_FEASIBILITY,
   AI_RECREATION_VERSION,
@@ -219,10 +221,10 @@ function storedBreakdown(overrides: Partial<StoredSegmentBreakdown> = {}): Store
     focus_answer: "",
     difficulty: "easy",
     technique: {
-      name: "Long-exposure stills sequenced into video",
-      evidence: "Smooth continuous smears, no stepped ghosting.",
+      name: "Traffic smeared and rewound: long-shutter time-lapse, ramped and reversed in post",
+      evidence: "Smooth continuous smears, no stepped ghosting; a dip to zero at 3.0s where it turns.",
       routes: [
-        { name: "In camera: stills", when: "You own a stills body.", steps: ["ND filter.", "1s exposure."], gives_up: "" },
+        { name: "Camera + post: 1/8s time-lapse, ramped and reversed", when: "You can shoot it.", steps: ["Interval 1/8s.", "Speed 800%, reverse at 3.0s."], gives_up: "" },
         { name: "In post: time remap", when: "Only video exists.", steps: ["Speed 800%.", "Optical Flow."], gives_up: "Edge ghosting." },
       ],
     },
@@ -235,12 +237,23 @@ function storedBreakdown(overrides: Partial<StoredSegmentBreakdown> = {}): Store
     crew: "2",
     kit: { minimum: "a", full: "b" },
     version: 1,
-    prompt_version: "segment-v3",
+    prompt_version: SEGMENT_PROMPT_VERSION,
     focus: null,
     generated_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
 }
+
+describe("ai recreation prompt v3", () => {
+  it("is versioned v3 and moves ramps and reverses into the NLE, not the prompt", () => {
+    expect(AI_RECREATION_PROMPT_VERSION).toBe("ai-recreation-v3");
+    const prompt = aiRecreationSystemPrompt({ shotCount: 1, frameCount: 6, segmentSeconds: 7.4 });
+    expect(prompt).toContain("MOTION LINE");
+    expect(prompt).toContain("Each record carries a motion line");
+    expect(prompt).toContain("a reverse as negative speed");
+    expect(prompt).toContain("a prompt must not ask for one");
+  });
+});
 
 describe("compactBreakdown", () => {
   it("sends the look, the technique and the department briefs, and nothing else", () => {
@@ -248,10 +261,10 @@ describe("compactBreakdown", () => {
     expect(Object.keys(out).sort()).toEqual(["departments", "difficulty", "technique", "title", "what_happens"]);
     // Routes are reduced to name and steps: the when/gives-up lines are for a reader choosing a route.
     expect(out.technique).toEqual({
-      name: "Long-exposure stills sequenced into video",
-      evidence: "Smooth continuous smears, no stepped ghosting.",
+      name: "Traffic smeared and rewound: long-shutter time-lapse, ramped and reversed in post",
+      evidence: "Smooth continuous smears, no stepped ghosting; a dip to zero at 3.0s where it turns.",
       routes: [
-        { name: "In camera: stills", steps: ["ND filter.", "1s exposure."] },
+        { name: "Camera + post: 1/8s time-lapse, ramped and reversed", steps: ["Interval 1/8s.", "Speed 800%, reverse at 3.0s."] },
         { name: "In post: time remap", steps: ["Speed 800%.", "Optical Flow."] },
       ],
     });

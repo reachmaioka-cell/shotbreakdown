@@ -96,7 +96,7 @@ async function main() {
     const { data: shots } = await admin
       .from("shots")
       .select(
-        "shot_index, start_seconds, end_seconds, duration_seconds, status, shot_size, movement_type, lighting_key, time_of_day, moods, dominant_colors, thumbnail_path, summary, error_message"
+        "shot_index, start_seconds, end_seconds, duration_seconds, status, shot_size, movement_type, lighting_key, time_of_day, moods, dominant_colors, thumbnail_path, summary, error_message, motion_profile"
       )
       .eq("video_id", video.id)
       .order("shot_index");
@@ -139,6 +139,16 @@ async function main() {
     if ((shots ?? []).some((s) => !s.thumbnail_path)) problems.push("a shot has no thumbnail");
     if ((shots ?? []).some((s) => s.status === "complete" && !s.shot_size)) {
       problems.push("a completed shot has no facets");
+    }
+    // Ingest measures motion for every shot; a row without it leaves the model
+    // to guess at ramps and holds from stills.
+    if (
+      (shots ?? []).some((s) => {
+        const motion = s.motion_profile as { fps?: number; scores?: unknown } | null;
+        return !motion || !(Number(motion.fps) > 0) || !Array.isArray(motion.scores) || motion.scores.length < 1;
+      })
+    ) {
+      problems.push("a shot has no motion profile");
     }
 
     // The trim: the stored object must BE the segment, the original must be gone,

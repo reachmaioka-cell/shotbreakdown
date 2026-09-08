@@ -6,9 +6,12 @@ import {
   extractFrameAt,
   extractRepresentativeFrame,
   frameStats,
+  measureMotion,
+  SCENE_SAMPLE_FPS,
   probeVideo,
   type ProbeResult,
 } from "@/lib/video/ffmpeg";
+import { compactMotion, motionSampleRate, sliceMotion, type MotionProfile } from "@/lib/video/motion";
 
 export type DetectedShot = {
   index: number;
@@ -17,7 +20,12 @@ export type DetectedShot = {
   durationSeconds: number;
   /** Scene-change score at this shot's opening cut. 1 for the first shot. */
   cutScore: number;
+  /** Frame-to-frame change across the shot, at most 240 samples: the ramps and holds stills cannot show. */
+  motion: MotionProfile;
 };
+
+/** A shot's span, before its motion is attached. */
+export type ShotRange = Omit<DetectedShot, "motion">;
 
 export type ShotDetectionConfig = {
   threshold: number;
@@ -48,7 +56,7 @@ export function segmentShots(
   cutTimes: number[],
   durationSeconds: number,
   options: Partial<ShotDetectionConfig> = {}
-): DetectedShot[] {
+): ShotRange[] {
   const cfg = { ...SHOT_DETECTION, ...options };
   if (durationSeconds <= 0) return [];
 
@@ -73,7 +81,7 @@ export function segmentShots(
   }
   merged.push(last);
 
-  const shots: DetectedShot[] = [];
+  const shots: ShotRange[] = [];
   for (let i = 0; i < merged.length - 1; i++) {
     const start = merged[i];
     const end = merged[i + 1];
@@ -98,6 +106,8 @@ export function segmentShots(
 export type DetectionOutcome = {
   probe: ProbeResult;
   shots: DetectedShot[];
+  /** Frame-to-frame change across the whole segment, uncompacted. */
+  motion: MotionProfile;
   truncated: boolean;
 };
 
@@ -111,19 +121,26 @@ export async function detectShots(
   if (probe.durationSeconds <= 0) throw new Error("Could not read the video duration");
 
   const changes = await detectSceneChanges(file, { threshold: cfg.threshold });
+  // A second pass, at the source rate: the scene score cannot describe motion
+  // inside a shot, and a hold where a speed ramp passes through zero is often
+  // one to three frames long, which a 12/s sample lands on only by luck. Cut
+  // detection keeps its own pass and does not change under this one.
+  const motion = await measureMotion(file, { fps: motionSampleRate(probe.fps) });
+  const margin = Math.ceil(motion.fps / SCENE_SAMPLE_FPS);
   const scores = new Map(changes.map((c) => [c.timeSeconds, c.score]));
-  const shots = segmentShots(
+  const ranges = segmentShots(
     changes.map((c) => c.timeSeconds),
     probe.durationSeconds,
     cfg
   );
 
-  for (const shot of shots) {
-    const score = scores.get(shot.startSeconds);
-    if (score) shot.cutScore = score;
-  }
+  const shots = ranges.map((range) => ({
+    ...range,
+    cutScore: scores.get(range.startSeconds) || range.cutScore,
+    motion: compactMotion(sliceMotion(motion, range.startSeconds, range.endSeconds, margin)),
+  }));
 
-  return { probe, shots, truncated: shots.length >= cfg.maxShots };
+  return { probe, shots, motion, truncated: shots.length >= cfg.maxShots };
 }
 
 export type CandidateFrame = {

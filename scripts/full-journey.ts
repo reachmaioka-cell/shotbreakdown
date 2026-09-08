@@ -25,6 +25,8 @@ const END = Number(process.env.SEGMENT_END ?? 13);
 const FOCUS =
   process.env.FOCUS ??
   "I'm the editor. Where does each cut land and what do I need shot long enough for?";
+/** A route names its phase, and 'Camera + post:' is the whole making, capture then post. */
+const ROUTE_PREFIX = /^(Camera \+ post|In camera|In post):/;
 
 let passed = 0;
 let failed = 0;
@@ -225,6 +227,11 @@ async function main() {
         "the first route is a complete recipe (three or more steps)",
         (technique?.routes[0]?.steps.length ?? 0) >= 3,
         { steps: technique?.routes[0]?.steps.length ?? 0 }
+      );
+      check(
+        "the first route names its phase (Camera + post / In camera / In post)",
+        ROUTE_PREFIX.test(technique?.routes[0]?.name ?? ""),
+        { name: technique?.routes[0]?.name }
       );
       check("it answers the question that was asked", breakdown.focus_answer.trim().length > 80, {
         length: breakdown.focus_answer.trim().length,

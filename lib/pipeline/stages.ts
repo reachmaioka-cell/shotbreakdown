@@ -32,6 +32,7 @@ import {
 import { createAdminClient } from "@/lib/supabase/admin";
 import { detectShots, extractShotFrames, SHOT_DETECTION } from "@/lib/video/shots";
 import { probeVideo, runFfmpeg, trimVideo } from "@/lib/video/ffmpeg";
+import type { MotionProfile } from "@/lib/video/motion";
 import { instagramOembed, tiktokOembed, youtubeThumbnailAndTitle } from "@/lib/source";
 import { fetchAnalysisImage } from "@/lib/media";
 import {
@@ -328,7 +329,7 @@ export async function runIngestVideo(job: ProcessingJob): Promise<Record<string,
     // frames are still being written.
     const existing = await admin
       .from("shots")
-      .select("id, shot_index")
+      .select("id, shot_index, motion_profile")
       .eq("video_id", videoId);
     const existingByIndex = new Map(
       (existing.data ?? []).map((r) => [r.shot_index as number, r.id as string])
@@ -350,6 +351,7 @@ export async function runIngestVideo(job: ProcessingJob): Promise<Record<string,
             width: detection.probe.width,
             height: detection.probe.height,
             aspect_ratio: detection.probe.aspectRatio,
+            motion_profile: s.motion,
           }))
         )
         .select("id, shot_index");
@@ -359,6 +361,19 @@ export async function runIngestVideo(job: ProcessingJob): Promise<Record<string,
       for (const row of inserted ?? []) {
         existingByIndex.set(row.shot_index as number, row.id as string);
       }
+    }
+
+    // A re-run over rows made before motion was measured fills them in; rows
+    // that already carry a profile keep it.
+    const unmeasured = new Set(
+      (existing.data ?? [])
+        .filter((r) => r.motion_profile === null)
+        .map((r) => r.shot_index as number)
+    );
+    for (const shot of detection.shots) {
+      const shotId = existingByIndex.get(shot.index);
+      if (!shotId || !unmeasured.has(shot.index)) continue;
+      await admin.from("shots").update({ motion_profile: shot.motion }).eq("id", shotId);
     }
 
     let processed = 0;
@@ -1193,7 +1208,14 @@ export async function runGenerateRecreationGuide(job: ProcessingJob): Promise<Re
  */
 async function loadSegmentFrames(
   admin: Admin,
-  shots: { id: string; shot_index: number; start_seconds: unknown; end_seconds: unknown; metadata: unknown }[],
+  shots: {
+    id: string;
+    shot_index: number;
+    start_seconds: unknown;
+    end_seconds: unknown;
+    metadata: unknown;
+    motion_profile: unknown;
+  }[],
   maxFrames: number
 ): Promise<SegmentShotInput[]> {
   const { data: frames } = await admin
@@ -1258,11 +1280,25 @@ async function loadSegmentFrames(
         startSeconds: Number(shot.start_seconds),
         endSeconds: Number(shot.end_seconds),
         metadata: parsed.success ? parsed.data : null,
+        motion: readMotionProfile(shot.motion_profile),
         images,
         image: repImage ? { buffer: repImage.buffer, contentType: repImage.contentType } : null,
       };
     })
   );
+}
+
+/**
+ * The stored motion profile, or null. The column is pipeline-owned, but a row
+ * ingested before it existed is null, and a malformed one must degrade the
+ * prompt rather than fail the segment.
+ */
+function readMotionProfile(value: unknown): MotionProfile | null {
+  if (!value || typeof value !== "object") return null;
+  const { fps, scores } = value as { fps?: unknown; scores?: unknown };
+  if (typeof fps !== "number" || !(fps > 0) || !Array.isArray(scores)) return null;
+  if (!scores.every((s) => typeof s === "number" && Number.isFinite(s))) return null;
+  return { fps, scores };
 }
 
 /**
@@ -1288,7 +1324,7 @@ export async function runGenerateSegmentBreakdown(
 
   const { data: shotRows } = await admin
     .from("shots")
-    .select("id, shot_index, start_seconds, end_seconds, metadata")
+    .select("id, shot_index, start_seconds, end_seconds, metadata, motion_profile")
     .eq("video_id", videoId)
     .eq("status", "complete")
     .order("shot_index");
@@ -1429,7 +1465,7 @@ export async function runGenerateAiRecreation(
 
   const { data: shotRows } = await admin
     .from("shots")
-    .select("id, shot_index, start_seconds, end_seconds, metadata")
+    .select("id, shot_index, start_seconds, end_seconds, metadata, motion_profile")
     .eq("video_id", videoId)
     .eq("status", "complete")
     .order("shot_index");

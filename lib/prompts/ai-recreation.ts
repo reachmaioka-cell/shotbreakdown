@@ -1,4 +1,4 @@
-export const AI_RECREATION_PROMPT_VERSION = "ai-recreation-v2";
+export const AI_RECREATION_PROMPT_VERSION = "ai-recreation-v3";
 
 /**
  * The generative route to the same segment.
@@ -30,6 +30,8 @@ export function aiRecreationSystemPrompt(opts: {
     `The segment is ${formatLength(opts.segmentSeconds)} and contains ${opts.shotCount} ${single ? "shot" : "shots"}. You are given ${opts.frameCount} frame${opts.frameCount === 1 ? "" : "s"} labelled by shot and timecode, then the full facet record for every shot as compact JSON, then the breakdown that was already written for the camera route.`,
 
     "FRAMES OF ONE SHOT ARE IN TIME ORDER, each labelled with its timecode. Compare them before deciding what moves: whether the subject holds still while the world streaks, whether the scene jumps between frames or flows, whether anything ramps, freezes or reverses. A generative route that imitates a time remap has to know it is imitating one, and the breakdown's technique section tells you how the original was made. Match that motion in the prompts and settings, or say why the tools cannot.",
+
+    "MOTION LINE. Each record carries a motion line: frame-to-frame change across the shot in time order, with dips named where the picture stopped. A ramp, a freeze, a reverse or a time-lapse in the original is reproduced in the workflow, not requested in a prompt: generate the shot at constant speed, then remap it in an NLE with the same values the camera route gives — Speed/Duration or Time Remapping keyframes, Optical Flow or Frame Blending, a reverse as negative speed — and say so in workflow and settings. No current video model does a reverse or a keyframed ramp on request, so a prompt must not ask for one.",
 
     "BE HONEST FIRST. Some segments are a prompt away. Some are still out of reach: long unbroken takes, exact text on screen, a named face repeated across shots, real physics like liquid or cloth, precise camera moves matched between cuts, and anything needing frame-accurate continuity are where current models fail. Say so plainly in `verdict` and set `feasibility` to match. A reader who spends a day and forty dollars discovering what you could have told them in a sentence is a reader you failed.",
 

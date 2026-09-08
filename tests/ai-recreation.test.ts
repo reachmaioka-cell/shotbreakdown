@@ -124,6 +124,37 @@ describe("feasibility", () => {
 
 describe("normalizeAiRecreation", () => {
   /*
+   * The list-marker stripper once ate the leading digits of any decimal or
+   * ratio, so "3.5 CFG scale" was stored as "5 CFG scale". It lands hardest on
+   * `settings`, whose entire job is carrying model values, and it is silent:
+   * the raw string is never kept, so nothing downstream can notice.
+   */
+  it("keeps decimals, ratios and durations intact", () => {
+    const settings = [
+      "3.5 CFG scale, 24 sampling steps",
+      "16:9 aspect, 1080p",
+      "0.04s decay per echo",
+      "1.25 motion strength",
+      "7.5 guidance scale",
+    ];
+    const out = normalizeAiRecreation(sampleRecreation({ settings }));
+    expect(out.settings).toEqual(settings);
+  });
+
+  it("still strips genuine list markers", () => {
+    const out = normalizeAiRecreation(
+      sampleRecreation({
+        workflow: ["1. Generate the plate.", "Step 3: set the seed", "2) Lock the seed across shots"],
+      })
+    );
+    expect(out.workflow).toEqual([
+      "Generate the plate.",
+      "set the seed",
+      "Lock the seed across shots",
+    ]);
+  });
+
+  /*
    * A tool named with no stated role in this pipeline, or a prompt with a
    * target and nothing to paste, is the padding the prompt forbids. Rendering
    * either would put a row on the page that answers nothing.

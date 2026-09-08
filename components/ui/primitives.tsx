@@ -71,7 +71,7 @@ export function Pill({
   title,
 }: {
   children: ReactNode;
-  tone?: "default" | "muted" | "accent" | "estimated";
+  tone?: "default" | "muted" | "accent" | "estimated" | "danger" | "ok";
   title?: string;
 }) {
   const tones = {
@@ -79,6 +79,8 @@ export function Pill({
     muted: "border-transparent bg-ink-2 text-text-2",
     accent: "border-accent/40 bg-accent/10 text-accent",
     estimated: "border-dashed border-line-strong bg-transparent text-text-2",
+    danger: "border-danger/40 bg-danger/10 text-danger",
+    ok: "border-ok/40 bg-ok/10 text-ok",
   } as const;
   return (
     <span

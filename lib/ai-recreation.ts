@@ -108,6 +108,7 @@ export async function generateAiRecreation(input: {
     segmentSeconds: input.segmentSeconds,
     focus: input.focus ?? null,
     videoTitle: input.videoTitle ?? null,
+    failureModes: input.insights ?? undefined,
     aboutFilmmaker: formatAboutFilmmaker(input.preferences ?? null),
     knowledgeBlock: formatKnowledgeBlock(knowledge),
   });

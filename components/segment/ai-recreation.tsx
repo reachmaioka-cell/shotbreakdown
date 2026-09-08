@@ -14,7 +14,7 @@ const GIVE_UP_MS = 15 * 60_000;
 const FEASIBILITY = {
   straightforward: {
     label: "Straightforward",
-    tone: "default",
+    tone: "ok",
     title: "Current tools do this well within a few tries",
   },
   achievable: {
@@ -29,7 +29,7 @@ const FEASIBILITY = {
   },
   "not-yet": {
     label: "Not yet",
-    tone: "accent",
+    tone: "danger",
     title: "No current tool gets there",
   },
 } as const;
@@ -126,6 +126,9 @@ export function AiRecreation({
 
   useEffect(() => {
     if (status !== "pending") return;
+    // A non-owner renders nothing here, so polling on their behalf is a request
+    // every few seconds for a document they will never be shown.
+    if (!isOwner) return;
     let cancelled = false;
     let delay = 2000;
     let timer: ReturnType<typeof setTimeout>;
@@ -159,11 +162,18 @@ export function AiRecreation({
             setRecreation(parsed.data);
             setStatus("ready");
             setArrived(true);
+            // The server components around this one hold the same status.
+            router.refresh();
+            return;
           }
-          // Either way the page rereads: the server components around this one
-          // hold the same status.
+          /*
+           * The server says ready but the document does not parse. Stopping
+           * here would leave a spinner running forever with nothing behind it,
+           * so keep polling and let the refresh re-render from the server, which
+           * is the authority on what is actually stored.
+           */
+          console.error("ai-recreation: ready but unparseable", parsed.error.issues[0]?.path);
           router.refresh();
-          return;
         }
         if (next === "failed") {
           setStatus("failed");
@@ -188,7 +198,7 @@ export function AiRecreation({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [status, videoId, router]);
+  }, [status, isOwner, videoId, router]);
 
   async function generate() {
     if (busy) return;
@@ -226,13 +236,22 @@ export function AiRecreation({
 
   // A reader who is not the owner gets the document when there is one and
   // nothing when there is not: the generation is the owner's to spend.
+  /*
+   * Always mounted, on every branch, with only its text changing. A live region
+   * created in the same render that first fills it is not announced: the
+   * assistive tech has no previous value to diff against.
+   */
+  const announcer = (
+    <p role="status" aria-live="polite" className="sr-only">
+      {arrived ? "The AI route is ready." : ""}
+    </p>
+  );
+
   if (status === "ready" && recreation) {
     const feasibility = FEASIBILITY[recreation.feasibility];
     return (
       <section className="mt-12 border-t border-line pt-8">
-        <p role="status" aria-live="polite" className="sr-only">
-          {arrived ? "The AI route is ready." : ""}
-        </p>
+        {announcer}
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
           <h3 className="eyebrow">Making this with AI</h3>
           <Pill tone={feasibility.tone} title={feasibility.title}>
@@ -343,6 +362,7 @@ export function AiRecreation({
 
   return (
     <section className="mt-12 border-t border-line pt-8" aria-live="polite">
+      {announcer}
       {status === "pending" ? (
         <div role="status" className="rounded-[3px] border border-line bg-ink-1 p-4">
           <Spinner label="Working out how this would be made with generative tools…" />

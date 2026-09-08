@@ -195,10 +195,24 @@ export function breakdownToMarkdown(breakdown: StoredSegmentBreakdown): string {
         const head = entry.software.trim()
           ? `${entry.step} — \`${entry.software}\``
           : entry.step;
-        push(`${i + 1}. **${cell(head)}**`);
-        // Three spaces keeps the continuation inside the numbered item.
-        if (entry.how.trim()) push(`   How: ${cell(entry.how)}`);
-        if (entry.why.trim()) push(`   Why: ${cell(entry.why)}`);
+        const marker = `${i + 1}. `;
+        /*
+         * The continuation has to clear the marker, which is four characters
+         * from the tenth step on, and it needs the blank line: without one the
+         * "how" is a lazy continuation and every renderer folds it into the
+         * step heading as a single run-on paragraph — burying the line that
+         * carries the real values.
+         */
+        const indent = " ".repeat(marker.length);
+        push(`${marker}**${cell(head)}**`);
+        if (entry.how.trim()) {
+          push();
+          push(`${indent}How: ${cell(entry.how)}`);
+        }
+        if (entry.why.trim()) {
+          push();
+          push(`${indent}Why: ${cell(entry.why)}`);
+        }
       });
       push();
     }

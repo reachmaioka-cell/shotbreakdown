@@ -17,6 +17,7 @@ export function aiRecreationSystemPrompt(opts: {
   focus?: string | null;
   videoTitle?: string | null;
   aboutFilmmaker?: string;
+  failureModes?: string;
   knowledgeBlock?: string;
 }): string {
   const single = opts.shotCount === 1;
@@ -57,6 +58,7 @@ export function aiRecreationSystemPrompt(opts: {
       : "",
     opts.videoTitle ? `The uploader titled this segment: ${opts.videoTitle}` : "",
     opts.aboutFilmmaker ? `About this filmmaker:\n${opts.aboutFilmmaker}` : "",
+    opts.failureModes ? `Known failure modes to avoid:\n${opts.failureModes}` : "",
     opts.knowledgeBlock ? `Technique references:\n${opts.knowledgeBlock}` : "",
   ]
     .filter(Boolean)

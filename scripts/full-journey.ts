@@ -155,17 +155,35 @@ async function main() {
       Math.abs(Number(video?.duration_seconds ?? 0) - (END - START)) <= 0.5,
       { got: video?.duration_seconds }
     );
-    check(
-      "the stored file is the trimmed segment",
-      String(video?.file_path ?? "").endsWith("/segment.mp4"),
-      { file_path: video?.file_path }
-    );
+    /*
+     * Whether a trim happened at all is a property of the range, not of the
+     * request. A range covering the whole file is deliberately NOT re-encoded:
+     * the upload already IS the segment, so there is no segment.mp4 to find and
+     * no original to delete. Asserting the trim unconditionally tested the
+     * script's assumption rather than the product.
+     */
+    const sourceSeconds = Number(video?.source_duration_seconds ?? 0);
+    const trimExpected =
+      sourceSeconds > 0 && (START > 0.05 || END < sourceSeconds - 0.05);
     const { data: leftover } = await admin.storage.from(UPLOAD_BUCKET).list(userId, { limit: 100 });
-    check(
-      "the original upload was deleted",
-      !(leftover ?? []).some((o) => o.name === basename(path)),
-      (leftover ?? []).map((o) => o.name)
-    );
+    const originalStillThere = (leftover ?? []).some((o) => o.name === basename(path));
+
+    if (trimExpected) {
+      check(
+        "the stored file is the trimmed segment",
+        String(video?.file_path ?? "").endsWith("/segment.mp4"),
+        { file_path: video?.file_path }
+      );
+      check("the original upload was deleted", !originalStillThere, {
+        objects: (leftover ?? []).map((o) => o.name),
+      });
+    } else {
+      check(
+        "an untrimmed range re-uses the upload rather than re-encoding it",
+        !String(video?.file_path ?? "").endsWith("/segment.mp4") && originalStillThere,
+        { file_path: video?.file_path, originalStillThere }
+      );
+    }
     check("every shot was analysed", (video?.analyzed_shot_count ?? 0) === (video?.shot_count ?? 0), {
       analyzed: video?.analyzed_shot_count,
       total: video?.shot_count,
@@ -214,11 +232,19 @@ async function main() {
       shownDepartments.length === DEPARTMENTS.length,
       DEPARTMENTS.filter((d) => !shownDepartments.includes(d))
     );
-    check(
-      "it states the segment was trimmed from a longer upload",
-      /trimmed from/i.test(html),
-      html.match(/trimmed from[^<]{0,60}/i)?.[0]
-    );
+    if (trimExpected) {
+      check(
+        "it states the segment was trimmed from a longer upload",
+        /trimmed from/i.test(html),
+        html.match(/trimmed from[^<]{0,60}/i)?.[0]
+      );
+    } else {
+      check(
+        "it does NOT claim a trim that never happened",
+        !/trimmed from/i.test(html),
+        html.match(/trimmed from[^<]{0,60}/i)?.[0]
+      );
+    }
     check("it shows the question that was asked", html.includes(FOCUS.slice(0, 40)));
 
     const listPage = await session.fetch("/videos");

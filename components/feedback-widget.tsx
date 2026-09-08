@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
 export function FeedbackWidget({ submissionId }: { submissionId: string }) {
+  const router = useRouter();
   const [rating, setRating] = useState<number | null>(null);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
@@ -35,7 +37,9 @@ export function FeedbackWidget({ submissionId }: { submissionId: string }) {
   async function ask(e: React.FormEvent) {
     e.preventDefault();
     if (!authed) {
-      window.location.href = "/auth/login";
+      // A client-side push keeps the app shell and the current scroll; a
+      // location assignment tears the whole document down to move one route.
+      router.push(`/auth/login?next=${encodeURIComponent(location.pathname)}`);
       return;
     }
     setBusy(true);

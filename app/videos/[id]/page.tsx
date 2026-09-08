@@ -8,6 +8,7 @@ import { AppShell } from "@/components/shell/app-shell";
 import { VideoWorkspace, type VideoState } from "@/components/video-workspace";
 import { savedShotIds } from "@/lib/collections";
 import { getAppUrl } from "@/lib/env";
+import { SEGMENT_TRIM_EPSILON_SECONDS } from "@/lib/plans";
 import { FEATURES } from "@/lib/features";
 import { resolveMediaUrl } from "@/lib/media";
 import { overlayBreakdown } from "@/lib/overlay";
@@ -55,6 +56,20 @@ function provenanceLine(
   sourceDuration: number | null
 ): string | null {
   if (start === null || end === null) return null;
+  /*
+   * A range that covers the whole file is not a trim, and the pipeline agrees:
+   * materializeSegment skips the re-encode under the same epsilon and leaves the
+   * upload as the segment. Saying "trimmed from 0:00 to 0:12 of a 0:12 upload"
+   * describes something that never happened.
+   */
+  if (
+    sourceDuration !== null &&
+    sourceDuration > 0 &&
+    start <= SEGMENT_TRIM_EPSILON_SECONDS &&
+    end >= sourceDuration - SEGMENT_TRIM_EPSILON_SECONDS
+  ) {
+    return null;
+  }
   const of =
     sourceDuration !== null && sourceDuration > 0
       ? `a ${formatTimecode(sourceDuration)} upload`

@@ -483,7 +483,7 @@ export function SegmentBreakdown({
 
       {/* 2. The answer to what they asked, first, because it is why they are here. */}
       {breakdown.focus_answer.trim() ? (
-        <section className="border-l-2 border-accent pl-4">
+        <section id="the-question" className="border-l-2 border-accent pl-4">
           <SectionTitle>The question you asked</SectionTitle>
           {breakdown.focus?.trim() ? (
             <p className="mb-3 max-w-[72ch] text-[13px] leading-relaxed text-text-2">
@@ -498,7 +498,7 @@ export function SegmentBreakdown({
       {breakdown.what_happens.trim() ||
       breakdown.setting.trim() ||
       breakdown.approach.trim() ? (
-        <section>
+        <section id="what-happens">
           <SectionTitle>What happens</SectionTitle>
           <div className="max-w-[72ch] flex flex-col gap-4">
             <Prose text={breakdown.what_happens} />
@@ -520,7 +520,7 @@ export function SegmentBreakdown({
 
       {/* 4. Shot sequence */}
       {sequence.length > 0 ? (
-        <section>
+        <section id="shot-sequence">
           <SectionTitle>Shot sequence</SectionTitle>
 
           <div className="hidden overflow-x-auto md:block">
@@ -674,7 +674,7 @@ export function SegmentBreakdown({
           discipline does, and the route for a reader who cannot reproduce the
           conditions on the day. */}
       {hasPost(post) ? (
-        <section>
+        <section id="post-production" className="scroll-mt-20">
           <SectionTitle>Post-production</SectionTitle>
           <div className="flex flex-col gap-6">
             {post.key_technique.trim() ? (
@@ -761,7 +761,7 @@ export function SegmentBreakdown({
 
       {/* 6. Departments */}
       {breakdown.departments.length > 0 ? (
-        <section>
+        <section id="departments" className="scroll-mt-20">
           <SectionTitle>Departments</SectionTitle>
           <div className="border-t border-line">
             {breakdown.departments.map((dept) => {

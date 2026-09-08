@@ -76,6 +76,8 @@ export default async function InterceptedShotPage({ params }: { params: Params }
           height: shot.height,
           tags: shot.tags,
           videoTitle: shot.video?.title ?? null,
+          hasBreakdown: shot.video?.hasBreakdown ?? false,
+          hasPostProduction: shot.video?.hasPostProduction ?? false,
         }}
         saved={saved.has(shot.id)}
         frames={frames.map((frame) => ({

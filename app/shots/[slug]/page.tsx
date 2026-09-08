@@ -276,6 +276,37 @@ export default async function ShotPage({ params }: { params: Params }) {
                   {" · "}
                   {humanize(shot.video.sourceType)}
                 </p>
+                {/*
+                  The breakdown is the reason most people opened this shot, and
+                  it lives on the segment. Link at the answer rather than at the
+                  top of it, and say plainly when there is not one yet.
+                */}
+                {shot.video.hasBreakdown ? (
+                  <ul className="mt-2.5 flex flex-col gap-1 border-t border-line pt-2.5">
+                    {shot.video.hasPostProduction ? (
+                      <li>
+                        <Link
+                          href={`/videos/${shot.videoId}#post-production`}
+                          className="text-[12px] text-accent hover:underline"
+                        >
+                          How it was done, and how to do it in post
+                        </Link>
+                      </li>
+                    ) : null}
+                    <li>
+                      <Link
+                        href={`/videos/${shot.videoId}#departments`}
+                        className="text-[12px] text-accent hover:underline"
+                      >
+                        What each department has to do
+                      </Link>
+                    </li>
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-[12px] text-text-3">
+                    No breakdown for this segment yet.
+                  </p>
+                )}
                 {shot.video.sourceUrl ? (
                   <a
                     href={shot.video.sourceUrl}

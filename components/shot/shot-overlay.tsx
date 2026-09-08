@@ -29,6 +29,10 @@ export type ShotOverlayShot = {
   height: number | null;
   tags: string[];
   videoTitle: string | null;
+  /** Whether the parent segment has a breakdown worth linking into. */
+  hasBreakdown?: boolean;
+  /** And whether that breakdown carries a post-production section specifically. */
+  hasPostProduction?: boolean;
 };
 
 export type ShotOverlayFrame = {
@@ -327,9 +331,50 @@ export function ShotOverlay({
                     >
                       {shot.videoTitle ?? "Untitled segment"}
                     </Link>
-                    <p className="mt-1 text-[12px] text-text-2">
-                      The full nine-department breakdown lives on the segment page.
-                    </p>
+                    {shot.hasBreakdown ? (
+                      <>
+                        <p className="mt-1 text-[12px] text-text-2">
+                          The breakdown for this segment covers all nine departments.
+                        </p>
+                        {/*
+                          Deep links, not a link to the top of a long document.
+                          Someone who opened a shot to ask "how was this done"
+                          should land on the answer, not on the player above it.
+                        */}
+                        <ul className="mt-2 flex flex-col gap-1">
+                          {shot.hasPostProduction ? (
+                            <li>
+                              <Link
+                                href={`/videos/${shot.videoId}#post-production`}
+                                className="text-[13px] text-accent hover:underline"
+                              >
+                                How it was done, and how to do it in post
+                              </Link>
+                            </li>
+                          ) : null}
+                          <li>
+                            <Link
+                              href={`/videos/${shot.videoId}#departments`}
+                              className="text-[13px] text-accent hover:underline"
+                            >
+                              What each department has to do
+                            </Link>
+                          </li>
+                          <li>
+                            <Link
+                              href={`/videos/${shot.videoId}#shot-sequence`}
+                              className="text-[13px] text-accent hover:underline"
+                            >
+                              This shot in the sequence
+                            </Link>
+                          </li>
+                        </ul>
+                      </>
+                    ) : (
+                      <p className="mt-1 text-[12px] text-text-2">
+                        This segment has no breakdown yet. Open it to write one.
+                      </p>
+                    )}
                   </div>
 
                   <dl className="grid grid-cols-[minmax(0,6.5rem)_1fr] gap-x-4 gap-y-1.5 border-t border-line pt-3">

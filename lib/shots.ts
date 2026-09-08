@@ -342,8 +342,27 @@ export type ShotDetail = {
     shotCount: number;
     visibility: string;
     userId: string | null;
+    /**
+     * Whether the segment has a breakdown, and whether that breakdown carries a
+     * post-production section. A shot links back to those answers, and a link
+     * that lands on a section which is not there is worse than no link.
+     */
+    hasBreakdown: boolean;
+    hasPostProduction: boolean;
   } | null;
 };
+
+/** True only when the stored breakdown actually carries a non-empty post section. */
+function hasPostProductionSection(raw: unknown): boolean {
+  const post = (raw as { post_production?: Record<string, unknown> } | null)?.post_production;
+  if (!post || typeof post !== "object") return false;
+  const text = [post.key_technique, post.in_camera_or_post]
+    .filter((v): v is string => typeof v === "string")
+    .join("")
+    .trim();
+  const steps = Array.isArray(post.pipeline) ? post.pipeline.length : 0;
+  return text.length > 0 || steps > 0;
+}
 
 /** Load one shot with authorization applied. Returns null when not visible. */
 export async function getShot(
@@ -361,7 +380,7 @@ export async function getShot(
        start_seconds, end_seconds, duration_seconds, representative_timestamp,
        representative_frame_id, poster_path, thumbnail_path, width, height,
        aspect_ratio, tags, visibility, status, error_message, view_count, save_count, created_at,
-       videos!inner ( id, title, source_type, source_url, file_path, duration_seconds, shot_count, visibility, user_id )`
+       videos!inner ( id, title, source_type, source_url, file_path, duration_seconds, shot_count, visibility, user_id, breakdown_status, breakdown )`
     )
     .eq(column, shotId)
     .maybeSingle();
@@ -426,6 +445,14 @@ export async function getShot(
           shotCount: (video.shot_count as number) ?? 0,
           visibility: video.visibility as string,
           userId: video.user_id as string | null,
+          hasBreakdown: video.breakdown_status === "ready" && !!video.breakdown,
+          /*
+           * Read off the stored document rather than the status: breakdowns
+           * written before the post-production pass existed are 'ready' and
+           * have no such section, and linking a reader to an anchor that is not
+           * on the page is the exact failure this flag exists to prevent.
+           */
+          hasPostProduction: hasPostProductionSection(video.breakdown),
         }
       : null,
     playbackUrl,

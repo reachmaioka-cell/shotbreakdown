@@ -82,7 +82,13 @@ export function UploadForm({
   const [range, setRange] = useState<SegmentRange>({ start: 0, end: 0 });
   const [duration, setDuration] = useState<number | null>(null);
   const [decodeFailed, setDecodeFailed] = useState(false);
-  const [trimOpen, setTrimOpen] = useState(false);
+  /*
+   * Open by default. Choosing the portion is the product — "we don't want to
+   * analyse a whole video, that's too broad" — so the picker is the thing the
+   * upload page is for, not a disclosure on it. Collapsed, a short file gave no
+   * sign the feature existed at all.
+   */
+  const [trimOpen, setTrimOpen] = useState(true);
   const [focus, setFocus] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
@@ -96,7 +102,7 @@ export function UploadForm({
     setRange({ start: 0, end: 0 });
     setDuration(null);
     setDecodeFailed(false);
-    setTrimOpen(false);
+    setTrimOpen(true);
   }
 
   function chooseFile(next: File) {
@@ -356,7 +362,7 @@ export function UploadForm({
               aria-controls={trimmerId}
               className="self-start text-[13px] text-text-1 hover:text-text-0"
             >
-              {trimOpen ? "Use the whole file" : "Trim to a segment"}
+              {trimOpen ? "Use the whole file" : "Pick a segment"}
             </button>
           )}
 

@@ -765,8 +765,10 @@ four public marketing URLs.
 1. Set the production environment variables listed in `README.md`. No `FEATURE_*` variable
    should be set: every one defaults off, which is the launch configuration.
 2. Confirm the `SITE_URL` and `CRON_SECRET` repository secrets exist, so
-   `.github/workflows/worker-ping.yml` can drain the queue every five minutes. The two-minute
-   Vercel cron needs a paid plan; the pinger is the alternative.
+   `.github/workflows/worker-ping.yml` can drain the queue every five minutes. This is not
+   optional on a Hobby Vercel account: Hobby refuses to deploy at all with a sub-daily cron in
+   `vercel.json`, so the `/api/worker` entry was removed and the pinger is the only thing
+   draining the queue. `/api/cron/daily` stays — once a day is within the Hobby limit.
 3. Deploy a preview, run `npm run http:smoke <preview-url>`, then upload one real segment with
    a question and read the breakdown.
 4. Promote, and repeat step 3 once against production.

@@ -38,12 +38,29 @@ export function priceMatchesPlan(price: Pick<Stripe.Price, "unit_amount" | "recu
 }
 
 /*
- * One answer per process. The Price is a piece of configuration that changes
- * when someone edits it in the dashboard, not per request, and a redeploy
- * re-reads it. A definite answer is cached; a failed retrieve is not, so a
- * blip does not pin the wrong answer for the life of the instance.
+ * How long a definite answer is trusted before Stripe is asked again.
+ *
+ * The verdict used to be cached for the life of the process, which made a
+ * mismatch a deploy-to-clear condition: someone corrects the Price in the
+ * dashboard, and every running instance goes on refusing checkout until it
+ * happens to be replaced. So the cache is a TTL, and the two TTLs differ
+ * because the two states are not alike. A match is the steady state and stays
+ * cached long enough that the common path costs nothing — one call per
+ * instance per ten minutes, not one per checkout. A mismatch is an outage
+ * somebody is actively standing in the dashboard fixing, so it is re-checked
+ * within the minute; the cost of being wrong in that direction is a refused
+ * sale, and the cost of the extra call is nothing, because nobody is buying
+ * while it is refused.
  */
-let priceVerdict: { priceId: string; matches: boolean } | null = null;
+export const PRICE_MATCH_TTL_MS = 10 * 60 * 1000;
+export const PRICE_MISMATCH_TTL_MS = 60 * 1000;
+
+/*
+ * The Price is configuration, not per-request data. A definite answer is
+ * cached until it expires; a failed retrieve is not cached at all, so a blip
+ * does not pin the wrong answer.
+ */
+let priceVerdict: { priceId: string; matches: boolean; expiresAt: number } | null = null;
 
 /**
  * True when checkout may proceed.
@@ -57,7 +74,9 @@ let priceVerdict: { priceId: string; matches: boolean } | null = null;
 export async function assertPriceMatches(): Promise<boolean> {
   const priceId = process.env.STRIPE_PRICE_ID;
   if (!priceId) return true;
-  if (priceVerdict?.priceId === priceId) return priceVerdict.matches;
+  if (priceVerdict?.priceId === priceId && Date.now() < priceVerdict.expiresAt) {
+    return priceVerdict.matches;
+  }
 
   let price: Stripe.Price;
   try {
@@ -80,6 +99,10 @@ export async function assertPriceMatches(): Promise<boolean> {
       }
     );
   }
-  priceVerdict = { priceId, matches };
+  priceVerdict = {
+    priceId,
+    matches,
+    expiresAt: Date.now() + (matches ? PRICE_MATCH_TTL_MS : PRICE_MISMATCH_TTL_MS),
+  };
   return matches;
 }

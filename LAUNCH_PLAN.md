@@ -900,3 +900,43 @@ only when different in kind) and kept to 3–5 steps, so the document does not g
 ceiling ran, cutting mid-word: the shipping step ended "to match the ramped dips in the moti",
 losing the values it existed to carry. The character cap is now a runaway guard at 2,000, it cuts
 on a word boundary, and the word ceilings govern.
+
+## Deployed to production, 2026-09-11
+
+Live at **https://shotbreakdown.vercel.app**, running `launch/core`.
+
+**What the deploy actually turned up.** Three things the plan had not anticipated, each of which
+would have broken a launch on its own:
+
+1. **Vercel Hobby refuses a sub-daily cron outright.** `vercel.json` declared `/api/worker` at
+   `*/2 * * * *`; Hobby does not degrade that to daily, it fails the whole deployment. The entry
+   was removed and the GitHub pinger is now the only thing draining the queue.
+2. **GitHub runs scheduled workflows only from the default branch**, which was still `main` — the
+   abandoned product. `worker-ping.yml` lives on `launch/core`, so the queue would never have
+   drained. The repo default is now `launch/core`; both workflows are active and the pinger was
+   run by hand against production to prove it (`{"ticks":1,...}` from `/api/worker`).
+3. **The production database held the old product's schema**, not an empty one — `projects`,
+   `releases`, `breakdowns`, `project_shots`, hand-built and sharing no lineage with
+   `supabase/migrations`, so `0001` failed on `profiles already exists`. It was dumped
+   (419 KB, schema + data) and the `public` schema was reset before migrating.
+
+**State.** All 29 migrations applied and tracked in `schema_migrations`. The production schema was
+then compared against the local database field by field and is identical on every axis: 24 tables,
+363 columns, 186 functions, 40 policies, 79 indexes, 15 triggers, 9 enums. Vercel production
+carries the ten variables this build reads and none of the five dead ones the old product left;
+`SITE_URL` and `CRON_SECRET` are set as repository secrets.
+
+**Verified by running against production**, not locally: `http:smoke` (all checks, 2 skipped by
+feature flags as designed); a real signup through the public auth API; an upload into the user's
+own storage folder under RLS; `POST /api/videos`; the queue drained through `/api/worker` exactly
+as the cron does it; the full pipeline to `breakdown_status = ready`; and the segment page fetched
+with real session cookies — it renders the technique spine, the question asked, `Camera + post:`
+as route 1, a Time Remapping step, no retired sections, and 401s for a stranger. The motion
+profile measured on production matched local exactly (24/s, 176 samples) and the breakdown came
+back `segment-v4`, 1,760 words, with the remap keyframed at the measured dips (2.8s, 4.7s, 6.3s).
+Test accounts and rows were deleted afterwards; production holds two accounts, both Ken's, and no
+segments.
+
+**Left open.** 25 MB of orphaned test objects in the `uploads` bucket (row deletion is blocked by
+`storage.protect_delete`, correctly — they need the Storage API and a service-role key), and the
+old product's public `thumbnails` bucket, 11 objects, which nothing reads any more.

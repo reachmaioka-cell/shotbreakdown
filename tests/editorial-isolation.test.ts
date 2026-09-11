@@ -1,12 +1,20 @@
 /**
  * The editorial corpus stays private until Ken says otherwise.
  *
- * Seeding music-video references before launch is only safe if a row written
- * with `visibility = 'public', is_editorial = true` is unreadable to everyone
- * but an admin while `FEATURE_PUBLIC_LIBRARY` is off. That guarantee lives in
- * two places — the flag helpers, and the shot read path — and both are pinned
- * here. The database half runs against the local Supabase stack, because a
- * mocked client would only prove that the mock agrees with the test.
+ * Seeding music-video references before launch means a row written with
+ * `is_editorial = true` must not reach a reader while `FEATURE_PUBLIC_LIBRARY`
+ * is off. The app-side half of that — the flag helpers and the shot read path —
+ * is pinned here, admin bypass included.
+ *
+ * The app-side half is not the whole of it, and the last two tests say so out
+ * loud: a row stored with `visibility = 'public'` is readable straight from
+ * PostgREST with the publishable anon key, so no amount of page code hides it.
+ * Those tests assert the exposure rather than the absence of it, so that
+ * seeding the corpus non-public turns them red and they are rewritten
+ * deliberately instead of a real guarantee being assumed.
+ *
+ * The database half runs against the local Supabase stack, because a mocked
+ * client would only prove that the mock agrees with the test.
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -105,7 +113,9 @@ suite("editorial rows are invisible while the public library is off", () => {
   let strangerId: string;
   let editorialVideoId: string;
   let ownedVideoId: string;
+  let adminId: string;
   let strangerClient: SupabaseClient;
+  let anonClient: SupabaseClient;
 
   beforeAll(async () => {
     const tag = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -135,6 +145,26 @@ suite("editorial rows are invisible while the public library is off", () => {
       password: strangerPassword,
     });
     if (signInError) throw new Error(`signIn stranger: ${signInError.message}`);
+
+    // Nobody signed in at all, holding only the key the browser bundle ships.
+    anonClient = createClient(url!, anonKey!, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    // `is_admin` is service-role-only (protect_admin_flag), so the fixture has
+    // to be promoted the same way a real admin is.
+    const adminUser = await admin.auth.admin.createUser({
+      email: `editorial-admin-${tag}@shotbreakdown.test`,
+      password: `pw-${tag}C3!`,
+      email_confirm: true,
+    });
+    if (!adminUser.data.user) throw new Error(`createUser admin: ${adminUser.error?.message}`);
+    adminId = adminUser.data.user.id;
+    const { error: promoteError } = await admin
+      .from("profiles")
+      .update({ is_admin: true })
+      .eq("id", adminId);
+    if (promoteError) throw new Error(`promote admin: ${promoteError.message}`);
 
     // The exact shape scripts/seed-music-clips.ts writes: nobody's row, public,
     // editorial, with a slug anyone could guess from the title.
@@ -228,7 +258,7 @@ suite("editorial rows are invisible while the public library is off", () => {
     // shot_frames cascades from shots.
     await admin.from("shots").delete().in("id", [editorialShotId, ownedPublicShotId]);
     await admin.from("videos").delete().in("id", [editorialVideoId, ownedVideoId]);
-    for (const id of [ownerId, strangerId]) {
+    for (const id of [ownerId, strangerId, adminId]) {
       if (id) await admin.auth.admin.deleteUser(id);
     }
   });
@@ -258,6 +288,18 @@ suite("editorial rows are invisible while the public library is off", () => {
     try {
       const shot = await mod.getShot(ownedPublicShotId, null);
       expect(shot?.id).toBe(ownedPublicShotId);
+    } finally {
+      restore();
+    }
+  });
+
+  it("still serves the corpus to an admin, who is the one person meant to curate it", async () => {
+    const { mod, restore } = await loadShotsWithFlag(undefined);
+    try {
+      expect((await mod.getShot(editorialShotId, adminId))?.id).toBe(editorialShotId);
+      expect(
+        (await mod.getShotFrames(editorialShotId, adminId, { allowPublic: true })).length
+      ).toBe(1);
     } finally {
       restore();
     }
@@ -304,10 +346,13 @@ suite("editorial rows are invisible while the public library is off", () => {
 
   /*
    * The database is not the gate, and pretending otherwise is how this would be
-   * lost later: RLS exposes a public row to every signed-in reader, editorial or
-   * not. Pinned so that the code gate above is understood to be load-bearing,
-   * and so a future RLS change that closes it here shows up as a failure to
-   * read rather than a silent duplication.
+   * lost later: RLS exposes a public row to every reader, signed in or not,
+   * editorial or not. The page code above never runs for these callers — they
+   * talk to PostgREST directly with the key the browser bundle ships.
+   *
+   * Both are asserted as exposures. The day the corpus is seeded non-public
+   * these go red, which is the point: the fix is a change to what is stored,
+   * and it should have to be acknowledged here rather than quietly assumed.
    */
   it("RLS alone does not hide an editorial row from a signed-in stranger", async () => {
     const { data, error } = await strangerClient
@@ -316,5 +361,26 @@ suite("editorial rows are invisible while the public library is off", () => {
       .eq("id", editorialShotId);
     expect(error).toBeNull();
     expect(data?.map((row) => row.id)).toEqual([editorialShotId]);
+  });
+
+  it("nor from an anonymous caller holding only the publishable anon key", async () => {
+    const { data, error } = await anonClient
+      .from("shots")
+      .select("id, title, metadata")
+      .eq("id", editorialShotId);
+    expect(error).toBeNull();
+    expect(data?.[0]?.id).toBe(editorialShotId);
+    // The whole analysis, not just the existence of a row.
+    expect(data?.[0]?.title).toContain("Editorial isolation fixture shot");
+    expect(data?.[0]?.metadata).not.toBeNull();
+  });
+
+  it("and the editorial video row, breakdown included, is anonymous to read too", async () => {
+    const { data, error } = await anonClient
+      .from("videos")
+      .select("id, title")
+      .eq("id", editorialVideoId);
+    expect(error).toBeNull();
+    expect(data?.map((row) => row.id)).toEqual([editorialVideoId]);
   });
 });

@@ -361,9 +361,33 @@ export type ShotDetail = {
  * library", not "readable now", so while the library is off a non-owner read is
  * a miss. Without this the corpus can be accumulated before launch only at the
  * price of serving it to anyone who guesses a slug.
+ *
+ * An admin still reads it. The corpus is being accumulated so that it can be
+ * curated, and curation happens on the shot page — a corpus nobody can open is
+ * as useless as one everybody can. `is_admin` is service-role-only
+ * (protect_admin_flag, 0005_feedback.sql), so this widens the door by exactly
+ * the set of people who already publish to the library. The profile lookup runs
+ * only once a row is already going to be refused, so the ordinary read path
+ * spends no query on it.
+ *
+ * This is defence in depth over the pages, not the isolation itself: a row with
+ * `visibility = 'public'` is readable straight from PostgREST with the
+ * publishable anon key, which ships in the browser bundle. What keeps the
+ * corpus private is seeding it non-public; see MONETIZATION_PLAN.md.
  */
-function editorialHidden(isEditorial: unknown, isOwner: boolean): boolean {
-  return !FEATURES.publicLibrary && !isOwner && isEditorial === true;
+async function editorialHidden(
+  isEditorial: unknown,
+  isOwner: boolean,
+  viewerId: string | null
+): Promise<boolean> {
+  if (FEATURES.publicLibrary || isOwner || isEditorial !== true) return false;
+  if (!viewerId) return true;
+  const { data } = await createAdminClient()
+    .from("profiles")
+    .select("is_admin")
+    .eq("id", viewerId)
+    .maybeSingle();
+  return data?.is_admin !== true;
 }
 
 /** True only when the stored breakdown carries the technique spine with something in it. */
@@ -405,7 +429,7 @@ export async function getShot(
   const isPublic = data.visibility === "public";
   const isUnlisted = data.visibility === "unlisted";
   if (!isOwner && !isPublic && !(isUnlisted && options.allowUnlisted)) return null;
-  if (editorialHidden(data.is_editorial, isOwner)) return null;
+  if (await editorialHidden(data.is_editorial, isOwner, viewerId)) return null;
 
   const rawMetadata = data.metadata as Record<string, unknown> | null;
   const merged = rawMetadata
@@ -492,7 +516,7 @@ export async function getShotFrames(
   if (!shot) return [];
   const isOwner = viewerId !== null && shot.user_id === viewerId;
   if (!isOwner && !(options.allowPublic && shot.visibility !== "private")) return [];
-  if (editorialHidden(shot.is_editorial, isOwner)) return [];
+  if (await editorialHidden(shot.is_editorial, isOwner, viewerId)) return [];
 
   const { data } = await admin
     .from("shot_frames")

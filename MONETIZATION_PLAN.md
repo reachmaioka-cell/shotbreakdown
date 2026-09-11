@@ -384,7 +384,18 @@ returns nothing for (1)–(4) to anyone but the service role, and after launch t
 library working as intended. Do add the `editorialHidden` check to the video page and the
 breakdown route as belt and braces for the publish-before-flag window, and have
 `tests/editorial-isolation.test.ts` pin all four surfaces against a private editorial row.
-Also from that lane: `/api/shots/[id]/similar` **is** flagged (`FEATURES.similarShots`, 404 for
+The verifier found two more of the same kind: `app/api/videos/[id]/ai-recreation/route.ts:60`
+has the identical `=== 'private'` check as the breakdown route, and a public **collection**
+containing an editorial shot renders its title, summary, thumbnail and `/shots` URL anonymously
+through `lib/collections.ts getCollection` and the collection export in `lib/export.ts`, because
+both query `shots` on `visibility` alone. With the corpus private, `POST /api/shots/[id]/save`
+and the collection-item routes refuse the row (they admit anything not private), so nothing
+editorial can enter a collection before launch; pin that in the tests too, and give
+`getCollection`/`lib/export.ts` the `editorialHidden` check for the publish-before-flag window.
+Note for C.6: `tests/editorial-isolation.test.ts` currently contains two tests that assert the
+REST **exposure** of a public editorial row on purpose, as a tripwire; when C.1/C.2 land, invert
+them into the guarantee (anon read of a private editorial row → 0 rows) rather than deleting
+them. Also from that lane: `/api/shots/[id]/similar` **is** flagged (`FEATURES.similarShots`, 404 for
 everyone) — `LAUNCH_PLAN.md`'s note that it is unflagged was stale and is corrected; and
 `POST /api/shots/[id]/view` increments `view_count` on any id with no visibility check, which
 leaks nothing but lets anyone inflate a counter the library may one day rank by — add a

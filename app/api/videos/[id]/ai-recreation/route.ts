@@ -1,7 +1,9 @@
 import { after } from "next/server";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { jsonError } from "@/lib/http";
 import { enqueueJob, findActiveJob } from "@/lib/pipeline/queue";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceIpRateLimit, enforceRateLimit } from "@/lib/rate-limit";
+import { editorialHidden } from "@/lib/shots";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -50,7 +52,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const admin = createAdminClient();
   const { data: video } = await admin
     .from("videos")
-    .select("id, user_id, visibility, ai_recreation, ai_recreation_status, ai_recreation_error")
+    .select(
+      "id, user_id, visibility, is_editorial, ai_recreation, ai_recreation_status, ai_recreation_error"
+    )
     .eq("id", id)
     .maybeSingle();
 
@@ -58,6 +62,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
   const isOwner = !!user && video.user_id === user.id;
   if (!isOwner && video.visibility === "private") return jsonError("Not found", 404);
+
+  /*
+   * Belt and braces over the line above. What keeps the editorial corpus out
+   * of this response before launch is that its rows are private; this covers
+   * the window after scripts/publish-editorial.ts has made them public and
+   * before FEATURE_PUBLIC_LIBRARY is on.
+   */
+  if (await editorialHidden(video.is_editorial, isOwner, user?.id ?? null)) {
+    return jsonError("Not found", 404);
+  }
 
   const status = (video.ai_recreation_status as string | null) ?? "missing";
   // ai_recreation_error is the raw pipeline/provider message stored verbatim, so
@@ -86,6 +100,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to generate an AI recreation", 401);
+
+  // Nothing writes this document automatically, so every call here spends. It
+  // needs an inbox we have reached, checked before the rate limit.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   const admin = createAdminClient();
   const { data: video } = await admin
@@ -117,6 +136,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     isPro ? { limit: 40 } : undefined
   );
   if (limited) return limited;
+
+  // The per-user budget bounds one account, and accounts are free.
+  const ipLimited = await enforceIpRateLimit("ai_recreation_ip", request);
+  if (ipLimited) return ipLimited;
 
   const already = await findActiveJob(dedupeKeyFor(id));
   if (already) return Response.json({ status: "pending" });

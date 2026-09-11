@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { MODEL } from "@/lib/constants";
 import { jsonError } from "@/lib/http";
 import { formatKnowledgeBlock, retrieveKnowledge } from "@/lib/knowledge";
@@ -27,6 +28,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to ask about a shot", 401);
+
+  // Every answer here is a model call, and any signed-in caller can ask about
+  // any public shot, so a stranger reaches this without owning anything.
+  // Checked before the rate limit, as on the other spending routes.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   const { data: profile } = await supabase
     .from("profiles")

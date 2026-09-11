@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ManageBillingButton, UpgradeButton } from "@/components/billing-buttons";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { PLANS, formatBytes } from "@/lib/plans";
+import { PLANS, PRO_PRICE_USD_MONTHLY, formatBytes } from "@/lib/plans";
 import { checkoutConfigured } from "@/lib/stripe";
 import { createClient } from "@/lib/supabase/server";
 
@@ -94,7 +94,8 @@ export default async function UpgradePage() {
           <section className="rounded-[3px] border border-accent/40 bg-accent/[0.04] p-5">
             <h2 className="text-[14px] font-medium text-accent">Pro</h2>
             <p className="mt-2 text-[26px] font-medium text-text-0">
-              $12<span className="text-[13px] font-normal text-text-2"> / month</span>
+              ${PRO_PRICE_USD_MONTHLY}
+              <span className="text-[13px] font-normal text-text-2"> / month</span>
             </p>
             <ul className="mt-5 flex flex-col gap-2">
               <Feature>{pro.videosPerMonth} video analyses per month</Feature>

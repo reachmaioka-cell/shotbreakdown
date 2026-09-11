@@ -86,8 +86,11 @@ export function SegmentAsk({ videoId }: { videoId: string }) {
         return;
       }
       if (!res.ok || !res.body) {
+        // A refusal is JSON even though a good answer is a text stream, and the
+        // spending guards put the sentence a reader can act on in message.
+        const data = (await res.json().catch(() => ({}))) as { message?: string };
         setMessages((m) => m.slice(0, -2));
-        setError("Could not get an answer. Try again.");
+        setError(data.message ?? "Could not get an answer. Try again.");
         return;
       }
 

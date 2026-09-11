@@ -45,12 +45,13 @@ two-minute cron, plus a warm-start kicked off by the submit request.
 | `NEXT_PUBLIC_SUPABASE_URL` | yes | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | yes | Public client key |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Server-only; pipeline and admin operations |
-| `DATABASE_URL` | yes | Direct Postgres URL, used by `npm run db:migrate` |
+| `DATABASE_URL` | yes | Direct Postgres URL, used by `npm run db:migrate`. A URL that is not localhost is refused unless the command is run as `npm run db:migrate -- --production` |
 | `ANTHROPIC_API_KEY` | yes | Shot analysis |
 | `OPENAI_API_KEY` | yes | Embeddings — search and Find Similar stop working without it |
 | `CRON_SECRET` | yes | Authorises `/api/worker` and `/api/cron/*` |
 | `NEXT_PUBLIC_SITE_URL` | yes | Canonical URLs, share links, OG tags |
 | `STRIPE_SECRET_KEY` `STRIPE_PRICE_ID` `STRIPE_WEBHOOK_SECRET` | for billing | In-app Pro upgrade |
+| `DAILY_SEGMENT_CAP` | optional | Site-wide ceiling on new segments in a rolling 24 hours, default 150. Reached, `POST /api/videos` returns `503 at_capacity`. The backstop behind the per-account plan limits: accounts are free, so only this bounds a day's model spend |
 | `SENTRY_DSN` | optional | Error monitoring. Without it, failures still go to stdout |
 | `SERPER_API_KEY` | optional | Web research for clip context |
 
@@ -137,6 +138,11 @@ The `db:seed` scripts fill the public corpus, so they are only useful with
 
 Vercel, with two crons in `vercel.json`: `/api/worker` every two minutes (processing) and
 `/api/cron/daily` (stalled-video recovery, rate-limit pruning, the nightly learning tick).
+
+**Sign-in email goes through Supabase's built-in sender.** No custom SMTP is configured, and that
+sender is rate-limited to a few messages an hour and documented as not for production: at launch
+volume some magic links will simply not arrive. Point Supabase → Auth → SMTP at a real provider
+before opening the doors; it needs a domain the app can send from.
 
 **The two-minute worker cron requires a paid Vercel plan.** On Hobby, cron is limited to one run
 per day, which is not enough to drain a processing queue — use an external pinger against

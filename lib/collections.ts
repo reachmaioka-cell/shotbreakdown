@@ -1,4 +1,5 @@
 import { preferClipFrame } from "@/lib/clip";
+import { editorialHidden } from "@/lib/shots";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveMediaUrl } from "@/lib/media";
 
@@ -224,11 +225,29 @@ export async function getCollection(
     .select(
       `id, position, note, shot_id,
        shots ( id, slug, title, summary, thumbnail_path, aspect_ratio, start_seconds,
-               duration_seconds, video_id, visibility, shot_size, movement_type,
+               duration_seconds, video_id, visibility, is_editorial, shot_size, movement_type,
                videos ( title ) )`
     )
     .eq("collection_id", row.id)
     .order("position");
+
+  const shotOf = (item: { shots: unknown }) =>
+    (Array.isArray(item.shots) ? item.shots[0] : item.shots) as Record<string, unknown> | null;
+
+  /*
+   * A public collection holding an editorial shot rendered its title, summary,
+   * thumbnail and /shots link to anyone. The corpus being private is what stops
+   * one getting in here at all; this covers the window after the launch script
+   * has published the corpus and before the library flag is on.
+   *
+   * Resolved once for the whole collection rather than per member: the answer
+   * only depends on the viewer, and an editorial row has no owner (is_editorial
+   * is service-role-only and the seeders write user_id null), so there is no
+   * per-shot ownership to weigh.
+   */
+  const hideEditorial = (itemRows ?? []).some((item) => shotOf(item)?.is_editorial === true)
+    ? await editorialHidden(true, false, viewerId)
+    : false;
 
   /*
    * A collection's visibility does not grant access to the shots inside it.
@@ -240,15 +259,14 @@ export async function getCollection(
    * grant the link itself carries — but never private.
    */
   const allowedForViewer = (shot: Record<string, unknown> | null): boolean => {
+    if (hideEditorial && shot?.is_editorial === true) return false;
     if (isOwner) return true;
     const visibility = (shot?.visibility as Visibility | undefined) ?? "private";
     if (visibility === "public") return true;
     return visibility === "unlisted" && !!options.allowUnlisted;
   };
 
-  const visibleRows = (itemRows ?? []).filter((item) =>
-    allowedForViewer((Array.isArray(item.shots) ? item.shots[0] : item.shots) as Record<string, unknown> | null)
-  );
+  const visibleRows = (itemRows ?? []).filter((item) => allowedForViewer(shotOf(item)));
   const hiddenItemCount = (itemRows ?? []).length - visibleRows.length;
 
   const items: CollectionItem[] = await Promise.all(

@@ -38,9 +38,23 @@ export const RATE_LIMITS = {
    * it automatically, so every call here is a model call somebody chose to make.
    */
   ai_recreation: { limit: 10, windowSeconds: 24 * 60 * 60 },
+  /*
+   * The `_ip` buckets below are keyed by address even for a signed-in caller.
+   * Accounts are free and instant, so the per-user budgets above bound one
+   * account rather than one person: twenty inboxes is twenty budgets. One
+   * address is harder to come by, so these sit alongside the per-user ones on
+   * the three routes that spend model money, and two different signed-in users
+   * behind one address share them — that is the point of them.
+   */
+  video_submit_ip: { limit: 12, windowSeconds: 24 * 60 * 60 },
+  ai_recreation_ip: { limit: 10, windowSeconds: 24 * 60 * 60 },
+  segment_breakdown_ip: { limit: 10, windowSeconds: 24 * 60 * 60 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitBucket = keyof typeof RATE_LIMITS;
+
+/** The buckets that are keyed by address rather than by account. */
+export type IpRateLimitBucket = Extract<RateLimitBucket, `${string}_ip`>;
 
 export type RateLimitResult = {
   allowed: boolean;
@@ -48,9 +62,12 @@ export type RateLimitResult = {
   resetAt: string | null;
 };
 
-/** Stable, non-reversible subject for anonymous callers. */
-export function clientKey(request: Request, userId?: string | null): string {
-  if (userId) return `u:${userId}`;
+/**
+ * Stable, non-reversible subject for the caller's address. Behind Vercel the
+ * client IP is the first hop in `x-forwarded-for`; the other two headers cover
+ * running behind something else.
+ */
+export function ipKey(request: Request): string {
   const forwarded = request.headers.get("x-forwarded-for") ?? "";
   const ip =
     forwarded.split(",")[0]?.trim() ||
@@ -59,6 +76,12 @@ export function clientKey(request: Request, userId?: string | null): string {
     "unknown";
   const salt = process.env.CRON_SECRET ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? "sb";
   return `ip:${createHash("sha256").update(`${salt}:${ip}`).digest("hex").slice(0, 32)}`;
+}
+
+/** Stable, non-reversible subject for anonymous callers. */
+export function clientKey(request: Request, userId?: string | null): string {
+  if (userId) return `u:${userId}`;
+  return ipKey(request);
 }
 
 export async function consumeRateLimit(
@@ -111,5 +134,19 @@ export async function enforceRateLimit(
   overrides?: Partial<RateLimitRule>
 ): Promise<NextResponse | null> {
   const result = await consumeRateLimit(bucket, clientKey(request, userId), overrides);
+  return result.allowed ? null : rateLimitResponse(result);
+}
+
+/**
+ * Guard a route by address, whatever account the caller is signed in to. Only
+ * the `_ip` buckets can be asked for: keying a per-user bucket by address would
+ * make one person's spend count against everyone behind their router.
+ */
+export async function enforceIpRateLimit(
+  bucket: IpRateLimitBucket,
+  request: Request,
+  overrides?: Partial<RateLimitRule>
+): Promise<NextResponse | null> {
+  const result = await consumeRateLimit(bucket, ipKey(request), overrides);
   return result.allowed ? null : rateLimitResponse(result);
 }

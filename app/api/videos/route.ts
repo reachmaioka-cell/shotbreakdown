@@ -1,6 +1,8 @@
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { trackAsync } from "@/lib/analytics";
+import { requireVerifiedUser } from "@/lib/auth-guard";
+import { atCapacityResponse, atDailyCapacity } from "@/lib/capacity";
 import { FEATURES } from "@/lib/features";
 import { jsonError } from "@/lib/http";
 import { enqueueJob } from "@/lib/pipeline/queue";
@@ -9,7 +11,7 @@ import {
   formatDurationLimit,
   planLimits,
 } from "@/lib/plans";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceIpRateLimit, enforceRateLimit } from "@/lib/rate-limit";
 import { detectLinkSource } from "@/lib/source";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -43,8 +45,18 @@ export async function POST(request: Request) {
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to break down a segment", 401);
 
+  // Before the rate limits, so an unverified caller does not even spend a
+  // bucket token: this is the route the whole spend hangs off.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
+
   const limited = await enforceRateLimit("video_submit", request, user.id);
   if (limited) return limited;
+
+  // The per-user budget bounds one account and accounts are free, so the
+  // address is checked as well. Two people sharing an office share this one.
+  const ipLimited = await enforceIpRateLimit("video_submit_ip", request);
+  if (ipLimited) return ipLimited;
 
   let raw: unknown;
   try {
@@ -87,6 +99,11 @@ export async function POST(request: Request) {
       { status: 402 }
     );
   }
+
+  // After the plan check and before anything is created: the ceiling is on what
+  // the site starts, and a caller who was already out of plan allowance should
+  // be told that rather than that the site is busy.
+  if (await atDailyCapacity()) return atCapacityResponse();
 
   const admin = createAdminClient();
   let insert: Record<string, unknown>;

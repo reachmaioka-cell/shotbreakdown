@@ -195,7 +195,26 @@ export async function searchShots(options: {
 
   if (error) throw new Error(`search_shots: ${error.message}`);
 
-  const rows = (data ?? []) as SearchRow[];
+  const returned = (data ?? []) as SearchRow[];
+  /*
+   * `saved` is the one scope search_shots decides by membership instead of by
+   * visibility: it returns any row the viewer holds a saved_shots row for. The
+   * saved_shots insert policy is `auth.uid() = user_id` and says nothing about
+   * the shot, so a signed-in caller can write that row for ANY shot id straight
+   * through PostgREST with the publishable anon key — and then read the whole
+   * card back here. Measured against the local stack, not supposed.
+   *
+   * The predicate is the save route's own (`private and not yours` is a 404),
+   * so nothing a user was legitimately allowed to save is dropped.
+   */
+  const rows =
+    (options.scope ?? "public") === "saved"
+      ? returned.filter(
+          (row) => row.visibility !== "private" || row.user_id === (options.viewerId ?? null)
+        )
+      : returned;
+  const withheld = returned.length - rows.length;
+
   const sourceByVideo = await videoSourceUrls(
     admin,
     rows.map((row) => row.video_id)
@@ -206,7 +225,7 @@ export async function searchShots(options: {
 
   return {
     shots,
-    total: rows[0]?.total_count ? Number(rows[0].total_count) : 0,
+    total: Math.max(0, (returned[0]?.total_count ? Number(returned[0].total_count) : 0) - withheld),
     usedSemantic: embedding !== null,
     degraded,
   };
@@ -373,21 +392,42 @@ export type ShotDetail = {
  * This is defence in depth over the pages, not the isolation itself: a row with
  * `visibility = 'public'` is readable straight from PostgREST with the
  * publishable anon key, which ships in the browser bundle. What keeps the
- * corpus private is seeding it non-public; see MONETIZATION_PLAN.md.
+ * corpus private is seeding it non-public; see docs/editorial-runbook.md.
+ *
+ * Exported because the same check has to run wherever a row reaches a reader
+ * without going through getShot: the segment page, the breakdown and
+ * AI-recreation routes, collections and the exports built from them. It covers
+ * the window between publish-editorial.ts running and the library flag going
+ * on, which is the only time a public editorial row exists with the library
+ * off.
  */
-async function editorialHidden(
+export async function editorialHidden(
   isEditorial: unknown,
   isOwner: boolean,
   viewerId: string | null
 ): Promise<boolean> {
   if (FEATURES.publicLibrary || isOwner || isEditorial !== true) return false;
-  if (!viewerId) return true;
+  return !(await viewerIsAdmin(viewerId));
+}
+
+/**
+ * The corpus is stored private, and an editorial row has no owner, so the
+ * ordinary visibility gate hides it from the one person who is supposed to be
+ * looking at it. /admin/review links straight at the shot page; without this
+ * the queue would be a list of 404s.
+ *
+ * `is_admin` is service-role-only (protect_admin_flag, 0005_feedback.sql) and
+ * this only ever widens a refusal that has already been decided, so it costs
+ * the ordinary read path nothing.
+ */
+async function viewerIsAdmin(viewerId: string | null): Promise<boolean> {
+  if (!viewerId) return false;
   const { data } = await createAdminClient()
     .from("profiles")
     .select("is_admin")
     .eq("id", viewerId)
     .maybeSingle();
-  return data?.is_admin !== true;
+  return data?.is_admin === true;
 }
 
 /** True only when the stored breakdown carries the technique spine with something in it. */
@@ -428,7 +468,11 @@ export async function getShot(
   const isOwner = viewerId !== null && data.user_id === viewerId;
   const isPublic = data.visibility === "public";
   const isUnlisted = data.visibility === "unlisted";
-  if (!isOwner && !isPublic && !(isUnlisted && options.allowUnlisted)) return null;
+  if (!isOwner && !isPublic && !(isUnlisted && options.allowUnlisted)) {
+    // An admin opening a row from the review queue is the one exception, and
+    // only for the corpus: a customer's private upload stays refused.
+    if (!(data.is_editorial === true && (await viewerIsAdmin(viewerId)))) return null;
+  }
   if (await editorialHidden(data.is_editorial, isOwner, viewerId)) return null;
 
   const rawMetadata = data.metadata as Record<string, unknown> | null;
@@ -515,7 +559,11 @@ export async function getShotFrames(
 
   if (!shot) return [];
   const isOwner = viewerId !== null && shot.user_id === viewerId;
-  if (!isOwner && !(options.allowPublic && shot.visibility !== "private")) return [];
+  if (!isOwner && !(options.allowPublic && shot.visibility !== "private")) {
+    // Same exception as getShot: the frame strip is part of what is being
+    // reviewed, so an admin sees the corpus's frames and nothing else's.
+    if (!(shot.is_editorial === true && (await viewerIsAdmin(viewerId)))) return [];
+  }
   if (await editorialHidden(shot.is_editorial, isOwner, viewerId)) return [];
 
   const { data } = await admin

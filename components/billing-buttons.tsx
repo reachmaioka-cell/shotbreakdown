@@ -21,9 +21,16 @@ function BillingAction({
     setError(null);
     try {
       const res = await fetch(endpoint, { method: "POST" });
-      const data = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        url?: string;
+        error?: string;
+        message?: string;
+      };
       if (!res.ok || !data.url) {
-        setError(data.error ?? "Something went wrong");
+        // Most refusals put the sentence in `error`. The unverified-email guard
+        // puts a machine code there and the sentence in `message`, and showing
+        // somebody the string "verify_email" tells them nothing.
+        setError(data.message ?? data.error ?? "Something went wrong");
         setLoading(false);
         return;
       }

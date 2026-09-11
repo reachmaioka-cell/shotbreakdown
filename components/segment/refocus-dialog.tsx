@@ -76,7 +76,9 @@ export function RefocusDialog({
         return;
       }
       if (!res.ok) {
-        setError(data.error ?? "Could not start the rewrite. Try again.");
+        // message before error: the spending guards send the sentence a reader
+        // can act on in message, and a machine-readable code in error.
+        setError(data.message ?? data.error ?? "Could not start the rewrite. Try again.");
         return;
       }
       setOpen(false);

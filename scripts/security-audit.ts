@@ -23,6 +23,14 @@ const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 /** Distinctive, so a concurrent test run's users are never swept by this one. */
 const TAG = `secaudit-${Date.now()}`;
 
+/**
+ * Checks that leave rows behind. On by default only against a local Supabase;
+ * `--destructive` is the deliberate opt-in for anything else.
+ */
+const DESTRUCTIVE =
+  /^https?:\/\/(127\.0\.0\.1|localhost)\b/.test(SUPABASE_URL) ||
+  process.argv.includes("--destructive");
+
 let passed = 0;
 const failures: string[] = [];
 
@@ -377,6 +385,26 @@ async function main() {
       });
     }
 
+    /*
+     * The editorial corpus must be unreadable with nothing but the key the
+     * browser bundle ships. `visibility = 'public'` is what the `shots public
+     * select` policy keys on and that policy is granted to `anon`, so this is
+     * the only check that actually says whether the corpus is exposed — the
+     * feature flag and the page code never run for this request. Expect zero
+     * rows until scripts/publish-editorial.ts has been run at launch.
+     */
+    for (const table of ["shots", "videos"]) {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/${table}?is_editorial=eq.true&select=id&limit=5`,
+        { headers: { apikey: ANON_KEY } }
+      );
+      const rows = (await res.json().catch(() => [])) as unknown[];
+      check(`the editorial corpus is unreadable anonymously in ${table}`, rows.length === 0, {
+        status: res.status,
+        rows: rows.length,
+      });
+    }
+
     section("8. Storage is private and per-user");
     const ownerObject = `${ownerId}/${TAG}-secret.txt`;
     await admin.storage
@@ -496,6 +524,83 @@ async function main() {
       check(`anonymous ${name} is refused`, res.status === 401 || res.status === 404, {
         status: res.status,
       });
+    }
+
+    section("12. A signed-up stranger cannot spend without an inbox we reached");
+    /*
+     * The probe body is deliberately unusable: `filePath` does not start with
+     * the caller's id, so POST /api/videos refuses it with 400 *after* the
+     * verify-email guard, the two rate limits, the plan check and the daily
+     * ceiling have all run. Nothing is inserted and no job is enqueued, so this
+     * section is safe to point at production.
+     */
+    const probeSubmit = (session: Session, headers: Record<string, string> = {}) =>
+      session.fetch("/api/videos", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ filePath: "not-your-folder/probe.mp4", sourceType: "video_upload" }),
+      });
+
+    /*
+     * The hole this whole phase exists to close. With Supabase's "Confirm
+     * email" off, `POST /auth/v1/signup` stamps `email_confirmed_at` itself and
+     * returns a session in the same response, so the app-side guard sees a
+     * confirmed user and lets it through — an address that does not exist gets
+     * a model budget. The guard cannot detect that; only the dashboard toggle
+     * stops the session being minted, which is why this check reads the auth
+     * endpoint rather than a route.
+     */
+    const throwawayEmail = `${TAG}-throwaway@shotbreakdown.test`;
+    const signupRes = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: "POST",
+      headers: { apikey: ANON_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ email: throwawayEmail, password: `${TAG}-Aa1!pass` }),
+    });
+    const signup = (await signupRes.json().catch(() => ({}))) as {
+      access_token?: string;
+      user?: { id?: string; email_confirmed_at?: string | null };
+    };
+    check(
+      "a password sign-up for an address we never emailed gets no session",
+      !signup.access_token,
+      {
+        hint: "Supabase → Auth → Providers → Email → Confirm email must be ON",
+        email_confirmed_at: signup.user?.email_confirmed_at ?? null,
+      }
+    );
+    if (signup.user?.id) await admin.auth.admin.deleteUser(signup.user.id).catch(() => {});
+
+    const confirmed = await probeSubmit(owner);
+    check("a confirmed session is not refused by the verify-email guard", confirmed.status !== 403, {
+      status: confirmed.status,
+    });
+
+    /*
+     * `ipKey` hashes the first hop of `x-forwarded-for` verbatim, so a value
+     * unique to this run gives the check its own 24h bucket and the first
+     * submit is meaningful. Two accounts alternate, both well under the
+     * per-user 10/hour, so a refusal here can only be the address budget.
+     */
+    if (DESTRUCTIVE) {
+      const address = `203.0.113.99-${TAG}`;
+      const statuses: number[] = [];
+      for (let i = 0; i < 13; i += 1) {
+        const res = await probeSubmit(i % 2 === 0 ? owner : stranger, {
+          "x-forwarded-for": address,
+        });
+        statuses.push(res.status);
+      }
+      check("the first submit from a fresh address is not rate limited", statuses[0] !== 429, {
+        statuses,
+      });
+      check("the 13th submit from one address in a day is refused", statuses[12] === 429, {
+        statuses,
+      });
+    } else {
+      skip(
+        "the 13th submit from one address in a day is refused",
+        "spends a day's address budget and writes rate_limits rows; pass --destructive"
+      );
     }
   } finally {
     await admin.auth.admin.deleteUser(ownerId).catch(() => {});

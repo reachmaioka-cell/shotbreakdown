@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { MODEL } from "@/lib/constants";
 import { jsonError } from "@/lib/http";
 import { formatKnowledgeBlock, retrieveKnowledge } from "@/lib/knowledge";
@@ -93,6 +94,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to ask about a segment", 401);
+
+  // Every answer here is a model call, so it needs an inbox we have reached.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   // A public segment is readable by anyone, so ownership is checked here rather
   // than inferred from the read succeeding. The conversation is the owner's.

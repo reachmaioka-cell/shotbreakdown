@@ -1,7 +1,8 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { SiteHeader } from "@/components/site-header";
+import { AppShell } from "@/components/shell/app-shell";
 import { FEATURES } from "@/lib/features";
 import { humanize } from "@/lib/filters";
 import { resolveMediaUrlMap } from "@/lib/media";
@@ -11,16 +12,34 @@ import { AdminActions } from "./admin-actions";
 
 export const dynamic = "force-dynamic";
 
+export const metadata: Metadata = {
+  title: "Review",
+  robots: { index: false, follow: false },
+};
+
+const ROW_COLUMNS =
+  "id, title, summary, thumbnail_path, visibility, review_status, reviewed_at, view_count, save_count, created_at, shot_size, movement_type, lighting_key, videos ( title, source_type )";
+
 /**
- * Editorial review. Publishing to the public library is an explicit decision
- * here — it is deliberately not something crowd ratings can trigger.
+ * Editorial review.
+ *
+ * Two states, and they are not the same axis. `review_status` is the decision —
+ * Ken can work through the queue for weeks — and `visibility` is exposure,
+ * which only scripts/publish-editorial.ts changes, once, at launch. There is no
+ * Publish button here on purpose: a row with `visibility = 'public'` is
+ * readable by anyone straight from PostgREST with the publishable anon key, so
+ * publishing as you curate would mean leaking the corpus one row at a time.
  *
  * The queue holds editorial rows only. `is_editorial` is writable by the
- * service role alone (protect_shot_columns), so the only things that reach
- * this page are what the seeders and this route put there — never a
- * customer's private upload, which nobody asked us to publish.
+ * service role alone (protect_shot_columns), so the only things that reach this
+ * page are what the seeders put there — never a customer's private upload,
+ * which nobody asked us to publish.
  */
-export default async function AdminReviewPage() {
+export default async function AdminReviewPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ tab?: string }>;
+}) {
   if (!FEATURES.adminReview) notFound();
 
   const supabase = await createClient();
@@ -31,64 +50,117 @@ export default async function AdminReviewPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("is_admin")
+    .select("is_admin, plan, display_name")
     .eq("id", user.id)
     .maybeSingle();
   if (!profile?.is_admin) notFound();
 
+  const tab = (await searchParams)?.tab === "approved" ? "approved" : "pending";
   const admin = createAdminClient();
-  const { data: candidates } = await admin
-    .from("shots")
-    .select(
-      "id, title, summary, thumbnail_path, visibility, view_count, save_count, created_at, shot_size, movement_type, lighting_key, videos ( title, source_type )"
-    )
-    .eq("status", "complete")
-    .eq("is_editorial", true)
-    .neq("visibility", "public")
-    .not("metadata", "is", null)
-    .order("save_count", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(60);
+
+  const [pendingCount, approvedCount, listed] = await Promise.all([
+    admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("is_editorial", true)
+      .eq("review_status", "pending"),
+    admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("is_editorial", true)
+      .eq("review_status", "approved"),
+    admin
+      .from("shots")
+      .select(ROW_COLUMNS)
+      .eq("is_editorial", true)
+      .eq("status", "complete")
+      .eq("review_status", tab)
+      .not("metadata", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(60),
+  ]);
 
   const thumbs = await resolveMediaUrlMap(
-    (candidates ?? []).map((row) => row.thumbnail_path as string | null)
+    (listed.data ?? []).map((row) => row.thumbnail_path as string | null)
   );
-  const rows = (candidates ?? []).map((row) => ({
+  const rows = (listed.data ?? []).map((row) => ({
     ...row,
     thumbUrl: thumbs.get((row.thumbnail_path as string | null) ?? "") ?? null,
   }));
 
+  const counts = { pending: pendingCount.count ?? 0, approved: approvedCount.count ?? 0 };
+  const tabs = [
+    { key: "pending" as const, label: "Queue", href: "/admin/review" },
+    { key: "approved" as const, label: "Approved", href: "/admin/review?tab=approved" },
+  ];
+
   return (
-    <div className="min-h-screen flex flex-col">
-      <SiteHeader />
-      <main id="main" className="mx-auto w-full max-w-4xl px-4 sm:px-6 py-8">
-        <div className="mb-6 flex items-baseline justify-between">
-          <h1 className="text-[17px] font-medium text-text-0">Review</h1>
-          <Link href="/admin/learning" className="text-[12px] text-text-2 hover:text-text-0">
-            Learning agent →
-          </Link>
+    <AppShell
+      authed
+      isPro={profile.plan === "pro"}
+      isAdmin
+      displayName={(profile.display_name as string | null) ?? null}
+      email={user.email ?? null}
+      topbar={
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-[13px] font-medium text-text-0">Review</h1>
+          {FEATURES.adminLearning ? (
+            <Link href="/admin/learning" className="text-[12px] text-text-2 hover:text-text-0">
+              Learning agent →
+            </Link>
+          ) : null}
         </div>
-        <p className="mb-6 text-[13px] text-text-2">
-          Editorial shots that are not public yet. Publishing one makes its page readable by
-          anyone holding the link, and lists it in the library once that flag is on. Rejecting
-          drops it from the corpus for good.
+      }
+    >
+      <div className="mx-auto w-full max-w-4xl px-1 py-4">
+        <nav className="mb-4 flex items-center gap-4 border-b border-line">
+          {tabs.map((item) => (
+            <Link
+              key={item.key}
+              href={item.href}
+              className={`-mb-px border-b px-0.5 pb-2 text-[13px] ${
+                tab === item.key
+                  ? "border-text-0 text-text-0"
+                  : "border-transparent text-text-2 hover:text-text-0"
+              }`}
+            >
+              {item.label}{" "}
+              <span className="mono text-[11px] text-text-3">{counts[item.key]}</span>
+            </Link>
+          ))}
+        </nav>
+
+        <p className="mb-5 text-[13px] text-text-2">
+          {tab === "pending"
+            ? "Editorial shots nobody has ruled on yet. Approving marks one fit for the library; it does not publish it. Rejecting is durable — the row stays on file with the decision on it."
+            : "Approved and waiting for launch. Nothing here is readable by anyone until npm run editorial:publish is run; each row says where it stands."}
         </p>
 
         {rows.length === 0 ? (
-          <p className="text-[13px] text-text-2">Nothing waiting for review.</p>
+          <p className="text-[13px] text-text-2">
+            {tab === "pending" ? "Nothing waiting for review." : "Nothing approved yet."}
+          </p>
         ) : (
           <ul className="flex flex-col divide-y divide-line border-y border-line">
             {rows.map((row) => {
               const video = Array.isArray(row.videos) ? row.videos[0] : row.videos;
               return (
-                <li key={row.id} className="flex items-center gap-4 py-3">
-                  <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-[3px] bg-ink-2">
+                <li key={row.id as string} className="flex items-center gap-4 py-3">
+                  <div className="relative flex h-14 w-24 shrink-0 items-center justify-center overflow-hidden rounded-[3px] bg-ink-2">
                     {row.thumbUrl ? (
                       <Image src={row.thumbUrl} alt="" fill sizes="96px" className="object-cover" />
-                    ) : null}
+                    ) : (
+                      // A still that failed to upload leaves the path dangling.
+                      // Say so, rather than showing an empty box that reads as a
+                      // slow image.
+                      <span className="text-[10px] text-text-3">no still</span>
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <Link href={`/shots/${row.id}`} className="text-[13px] text-text-0 hover:text-accent">
+                    <Link
+                      href={`/shots/${row.id}`}
+                      className="text-[13px] text-text-0 hover:text-accent"
+                    >
                       {(row.summary as string | null) ?? (row.title as string | null) ?? row.id}
                     </Link>
                     <p className="mt-0.5 text-[11px] text-text-3">
@@ -102,16 +174,24 @@ export default async function AdminReviewPage() {
                         .join(" · ")}
                     </p>
                     <p className="mt-0.5 text-[11px] text-text-3">
-                      {row.view_count} views · {row.save_count} saves · {row.visibility}
+                      {row.view_count} views · {row.save_count} saves ·{" "}
+                      {/* Exposure, spelled out: the whole point of the split. */}
+                      <span
+                        className={
+                          row.visibility === "public" ? "text-accent" : "text-text-3"
+                        }
+                      >
+                        {row.visibility === "public" ? "public" : "private — not published"}
+                      </span>
                     </p>
                   </div>
-                  <AdminActions shotId={row.id as string} />
+                  <AdminActions shotId={row.id as string} reviewStatus={tab} />
                 </li>
               );
             })}
           </ul>
         )}
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }

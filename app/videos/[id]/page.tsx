@@ -14,7 +14,7 @@ import { resolveMediaUrl } from "@/lib/media";
 import { overlayBreakdown } from "@/lib/overlay";
 import { getShare } from "@/lib/shares";
 import { formatDuration, formatTimecode } from "@/lib/shot-format";
-import { searchShots } from "@/lib/shots";
+import { editorialHidden, searchShots } from "@/lib/shots";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -49,11 +49,16 @@ function toNumber(value: unknown): number | null {
  * Only ever said when the uploader actually chose a range. A whole file that
  * was analysed end to end has no provenance to state, and inventing one would
  * describe a trim that never happened.
+ *
+ * The noun follows the source. An editorial reference was never uploaded by
+ * anyone — it is a music video on YouTube — and calling it an upload was the
+ * one reason the seeder could not record the span it covers.
  */
 function provenanceLine(
   start: number | null,
   end: number | null,
-  sourceDuration: number | null
+  sourceDuration: number | null,
+  sourceType: string | null
 ): string | null {
   if (start === null || end === null) return null;
   /*
@@ -70,10 +75,11 @@ function provenanceLine(
   ) {
     return null;
   }
+  const noun = sourceType === "youtube" ? "video" : "upload";
   const of =
     sourceDuration !== null && sourceDuration > 0
-      ? `a ${formatTimecode(sourceDuration)} upload`
-      : "the upload";
+      ? `a ${formatTimecode(sourceDuration)} ${noun}`
+      : `the ${noun}`;
   return `trimmed from ${formatTimecode(start)} to ${formatTimecode(end)} of ${of}`;
 }
 
@@ -89,7 +95,7 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
     .from("videos")
     .select(
       `id, user_id, title, status, stage_detail, progress, shot_count, analyzed_shot_count,
-       duration_seconds, error_message, source_url, source_type, file_path, visibility, created_at,
+       duration_seconds, error_message, source_url, source_type, file_path, visibility, is_editorial, created_at,
        focus, segment_start, segment_end, source_duration_seconds,
        breakdown, breakdown_status, breakdown_error,
        ai_recreation, ai_recreation_status, ai_recreation_error,
@@ -102,6 +108,14 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
 
   const isOwner = user !== null && video.user_id === user.id;
   if (!isOwner && video.visibility !== "public") notFound();
+  /*
+   * Belt and braces over the line above. What keeps the editorial corpus off
+   * this page before launch is that its rows are private; this covers the
+   * window after publish-editorial.ts has made them public and before the
+   * library flag is on, when the segment page would otherwise render a whole
+   * editorial breakdown to anyone with the id.
+   */
+  if (await editorialHidden(video.is_editorial, isOwner, user?.id ?? null)) notFound();
 
   const [result, playbackUrl, share, profileRow, prefsRow] = await Promise.all([
     searchShots({
@@ -221,7 +235,7 @@ export default async function VideoPage({ params }: { params: Promise<{ id: stri
   const facts = [
     state.durationSeconds ? formatDuration(state.durationSeconds) : null,
     shotTotal > 0 ? `${shotTotal} shot${shotTotal === 1 ? "" : "s"}` : null,
-    provenanceLine(segmentStart, segmentEnd, sourceDuration),
+    provenanceLine(segmentStart, segmentEnd, sourceDuration, video.source_type as string | null),
   ].filter(Boolean) as string[];
 
   return (

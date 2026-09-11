@@ -1,4 +1,5 @@
 import { after, NextResponse } from "next/server";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { jsonError } from "@/lib/http";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
@@ -14,6 +15,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Unauthorized", 401);
+
+  // A retry re-runs the whole pipeline, so it spends exactly what the original
+  // submit did. Checked before the rate limit, as on every spending route.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   const limited = await enforceRateLimit("video_retry", request, user.id);
   if (limited) return limited;

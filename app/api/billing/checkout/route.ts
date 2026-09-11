@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { createClient } from "@/lib/supabase/server";
 import { getAppUrl } from "@/lib/env";
 import { jsonError } from "@/lib/http";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { checkoutConfigured, getStripe } from "@/lib/stripe";
+import { assertPriceMatches, checkoutConfigured, getStripe } from "@/lib/stripe";
 
 export async function POST(request: Request) {
   if (!checkoutConfigured()) {
@@ -15,6 +16,15 @@ export async function POST(request: Request) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Unauthorized", 401);
+
+  /*
+   * An address we have never emailed is not allowed to start a subscription.
+   * Checkout hands Stripe an email and a customer record; if the account was
+   * minted without confirming the inbox, the receipts, the portal link and
+   * every dunning email go to somebody who never asked for them.
+   */
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   /*
    * Each call creates a Stripe session. Authenticated is not the same as
@@ -35,6 +45,16 @@ export async function POST(request: Request) {
 
   const priceId = process.env.STRIPE_PRICE_ID;
   if (!priceId) return jsonError("Billing is not configured", 503);
+
+  /*
+   * Never charge an amount the page did not show. If STRIPE_PRICE_ID points at
+   * something other than the advertised plan, the customer agreed to one
+   * number and their card sees another — a chargeback, not a support ticket.
+   * A Stripe outage is not a mismatch and does not block the upgrade.
+   */
+  if (!(await assertPriceMatches())) {
+    return jsonError("Billing is temporarily unavailable", 503);
+  }
 
   const origin = getAppUrl(request);
   const customerId =

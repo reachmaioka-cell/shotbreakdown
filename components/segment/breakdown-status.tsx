@@ -126,7 +126,12 @@ export function BreakdownStatus({
         return;
       }
       if (!res.ok) {
-        setActionError(data.error ?? "Could not start the breakdown. Try again.");
+        // message before error: the spending guards send the sentence a reader
+        // can act on ("confirm your email address first") in message, and a
+        // machine-readable code in error.
+        setActionError(
+          data.message ?? data.error ?? "Could not start the breakdown. Try again."
+        );
         return;
       }
       setError(null);

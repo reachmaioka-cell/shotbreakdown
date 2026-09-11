@@ -1,20 +1,26 @@
 /**
- * The editorial queue is the one place in the product that can turn a private
- * row into a public page, so its gate is worth pinning down: the flag, a
- * session, and `profiles.is_admin` all have to hold, and both actions only
- * ever touch editorial rows. Every assertion here fails if one of those
- * conditions is dropped from the page or the route.
+ * The editorial queue is where the corpus is curated, so its gate is worth
+ * pinning down: the flag, a session, and `profiles.is_admin` all have to hold,
+ * and both actions only ever touch editorial rows.
+ *
+ * The second thing pinned here is the split the whole model rests on. Curation
+ * (`review_status`) and exposure (`visibility`) are separate axes: approving
+ * must not publish anything, and there must be no way to publish from this
+ * surface at all — publication is scripts/publish-editorial.ts, run once at
+ * launch. Every assertion fails if one of those conditions is dropped from the
+ * page or the route.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  features: { adminReview: true },
-  user: null as { id: string } | null,
+  features: { adminReview: true, adminLearning: false },
+  user: null as { id: string; email?: string } | null,
   profile: null as { is_admin: boolean } | null,
   // What the service-role client hands back from the write / the queue read.
   writeResult: { data: [{ id: "shot-1" }], error: null } as {
     data: { id: string }[] | null;
     error: { message: string } | null;
+    count?: number;
   },
   calls: [] as unknown[][],
 }));
@@ -47,7 +53,7 @@ vi.mock("@/lib/supabase/admin", () => {
     state.calls.push([name, ...args]);
     return chain;
   };
-  for (const name of ["select", "update", "eq", "neq", "not", "order", "limit", "contains"]) {
+  for (const name of ["select", "update", "eq", "neq", "not", "order", "limit", "contains", "in"]) {
     chain[name] = record(name);
   }
   return {
@@ -69,7 +75,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("next/image", () => ({ default: () => null }));
 vi.mock("next/link", () => ({ default: () => null }));
-vi.mock("@/components/site-header", () => ({ SiteHeader: () => null }));
+vi.mock("@/components/shell/app-shell", () => ({ AppShell: () => null }));
 vi.mock("@/lib/media", () => ({ resolveMediaUrlMap: async () => new Map<string, string>() }));
 
 const post = async (body: unknown) => {
@@ -83,11 +89,16 @@ const post = async (body: unknown) => {
   );
 };
 
+/** The payload the route handed to `.update()`, whatever else it also called. */
+const updatePayload = () =>
+  state.calls.find((call) => call[0] === "update")?.[1] as Record<string, unknown> | undefined;
+
 const SHOT = "11111111-2222-4333-8444-555555555555";
 
 beforeEach(() => {
   state.features.adminReview = true;
-  state.user = { id: "user-1" };
+  state.features.adminLearning = false;
+  state.user = { id: "user-1", email: "admin@shotbreakdown.test" };
   state.profile = { is_admin: true };
   state.writeResult = { data: [{ id: SHOT }], error: null };
   state.calls.length = 0;
@@ -96,28 +107,28 @@ beforeEach(() => {
 describe("POST /api/admin/review — gate", () => {
   it("404s when the feature flag is off, even for an admin", async () => {
     state.features.adminReview = false;
-    const res = await post({ shotId: SHOT, action: "publish" });
+    const res = await post({ shotId: SHOT, action: "approve" });
     expect(res.status).toBe(404);
     expect(state.calls).toHaveLength(0);
   });
 
   it("404s for an anonymous request", async () => {
     state.user = null;
-    const res = await post({ shotId: SHOT, action: "publish" });
+    const res = await post({ shotId: SHOT, action: "approve" });
     expect(res.status).toBe(404);
     expect(state.calls).toHaveLength(0);
   });
 
   it("404s for a signed-in non-admin", async () => {
     state.profile = { is_admin: false };
-    const res = await post({ shotId: SHOT, action: "publish" });
+    const res = await post({ shotId: SHOT, action: "approve" });
     expect(res.status).toBe(404);
     expect(state.calls).toHaveLength(0);
   });
 
   it("404s when the account has no profile row at all", async () => {
     state.profile = null;
-    const res = await post({ shotId: SHOT, action: "publish" });
+    const res = await post({ shotId: SHOT, action: "approve" });
     expect(res.status).toBe(404);
   });
 
@@ -131,43 +142,82 @@ describe("POST /api/admin/review — gate", () => {
       state.user = { id: "user-1" };
       state.profile = { is_admin: true };
       setup();
-      expect((await post({ shotId: SHOT, action: "publish" })).status).toBe(404);
+      expect((await post({ shotId: SHOT, action: "approve" })).status).toBe(404);
     }
   });
 });
 
-describe("POST /api/admin/review — writes", () => {
-  it("publishes only an editorial, complete row", async () => {
-    const res = await post({ shotId: SHOT, action: "publish" });
+describe("POST /api/admin/review — the decision", () => {
+  it("approves an editorial, complete row without touching its visibility", async () => {
+    const res = await post({ shotId: SHOT, action: "approve" });
     expect(res.status).toBe(200);
-    expect(state.calls).toContainEqual(["update", { visibility: "public" }]);
+    expect(updatePayload()).toMatchObject({ review_status: "approved", reviewed_by: "user-1" });
+    expect(updatePayload()).not.toHaveProperty("visibility");
     expect(state.calls).toContainEqual(["eq", "id", SHOT]);
     expect(state.calls).toContainEqual(["eq", "status", "complete"]);
     expect(state.calls).toContainEqual(["eq", "is_editorial", true]);
   });
 
-  it("404s when the guard matched nothing, so a private upload cannot be published by id", async () => {
-    state.writeResult = { data: [], error: null };
-    const res = await post({ shotId: SHOT, action: "publish" });
-    expect(res.status).toBe(404);
+  it("stamps the moment of the decision", async () => {
+    const before = Date.now();
+    await post({ shotId: SHOT, action: "approve" });
+    const at = Date.parse(updatePayload()?.reviewed_at as string);
+    expect(at).toBeGreaterThanOrEqual(before);
+    expect(at).toBeLessThanOrEqual(Date.now());
   });
 
-  it("clears is_editorial on reject so the row leaves the queue for good", async () => {
+  it("credits the acting admin, not the row's owner or a client-supplied id", async () => {
+    state.user = { id: "the-real-admin" };
+    await post({ shotId: SHOT, action: "approve", reviewedBy: "someone-else" });
+    expect(updatePayload()?.reviewed_by).toBe("the-real-admin");
+  });
+
+  it("records a rejection durably and forces the row private", async () => {
     const res = await post({ shotId: SHOT, action: "reject" });
     expect(res.status).toBe(200);
-    expect(state.calls).toContainEqual(["update", { visibility: "private", is_editorial: false }]);
+    expect(updatePayload()).toMatchObject({
+      review_status: "rejected",
+      visibility: "private",
+      reviewed_by: "user-1",
+    });
+    // Auditable: the row stays in the corpus carrying the decision rather than
+    // losing the flag that says what it is.
+    expect(updatePayload()).not.toHaveProperty("is_editorial");
     expect(state.calls).toContainEqual(["eq", "is_editorial", true]);
   });
 
+  it("offers no way to publish — that is the launch script's job alone", async () => {
+    const res = await post({ shotId: SHOT, action: "publish" });
+    expect(res.status).toBe(400);
+    expect(state.calls).toHaveLength(0);
+  });
+
+  it("never writes visibility: 'public', whatever it is asked to do", async () => {
+    for (const action of ["approve", "reject"]) {
+      state.calls.length = 0;
+      await post({ shotId: SHOT, action });
+      expect(updatePayload()?.visibility).not.toBe("public");
+    }
+  });
+
+  it("404s when the guard matched nothing, so a non-editorial id decides nothing", async () => {
+    for (const action of ["approve", "reject"]) {
+      state.writeResult = { data: [], error: null };
+      const res = await post({ shotId: SHOT, action });
+      expect(res.status).toBe(404);
+    }
+  });
+
   it("rejects a malformed body before touching the database", async () => {
-    const res = await post({ shotId: "not-a-uuid", action: "publish" });
+    const res = await post({ shotId: "not-a-uuid", action: "approve" });
     expect(res.status).toBe(400);
     expect(state.calls).toHaveLength(0);
   });
 });
 
 describe("/admin/review page — gate and queue", () => {
-  const page = async () => (await import("@/app/admin/review/page")).default();
+  const page = async (tab?: string) =>
+    (await import("@/app/admin/review/page")).default({ searchParams: Promise.resolve({ tab }) });
 
   it("404s when the feature flag is off, even for an admin", async () => {
     state.features.adminReview = false;
@@ -187,12 +237,36 @@ describe("/admin/review page — gate and queue", () => {
     expect(state.calls).toHaveLength(0);
   });
 
-  it("lists editorial rows only, so no customer's private upload is offered for publication", async () => {
+  it("lists editorial rows only, so no customer's private upload is offered for review", async () => {
     state.writeResult = { data: [], error: null };
     await page();
     expect(state.calls).toContainEqual(["from", "shots"]);
     expect(state.calls).toContainEqual(["eq", "is_editorial", true]);
     expect(state.calls).toContainEqual(["eq", "status", "complete"]);
-    expect(state.calls).toContainEqual(["neq", "visibility", "public"]);
+  });
+
+  it("the queue is the pending rows, not everything that is not public", async () => {
+    state.writeResult = { data: [], error: null };
+    await page();
+    expect(state.calls).toContainEqual(["eq", "review_status", "pending"]);
+    // The old queue keyed on exposure. A private row that was already ruled on
+    // must not come back round.
+    expect(state.calls).not.toContainEqual(["neq", "visibility", "public"]);
+  });
+
+  it("the second tab lists the approved rows", async () => {
+    state.writeResult = { data: [], error: null };
+    await page("approved");
+    expect(state.calls).toContainEqual(["eq", "review_status", "approved"]);
+  });
+
+  it("counts both states whichever tab is open", async () => {
+    state.writeResult = { data: [], error: null };
+    await page();
+    const counts = state.calls.filter(
+      (call) => call[0] === "select" && call[2] !== undefined
+    );
+    expect(counts.length).toBe(2);
+    expect(counts[0][2]).toMatchObject({ count: "exact", head: true });
   });
 });

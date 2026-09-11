@@ -734,6 +734,10 @@ Each of these was found by running the thing, not by reading it.
   half an hour, with no live job and at least one analysed shot, is requeued. A `failed`
   breakdown is deliberately not swept — that one is the owner's to retry, and re-running it
   automatically would spend against a cause that has not changed.
+- **Sign-in email is sent by Supabase's built-in sender, which cannot carry launch volume.** It
+  is rate-limited to a handful of messages an hour and documented as not for production, so at
+  launch some magic links will not arrive. Closing it needs a domain to send from and a custom
+  SMTP provider on Supabase → Auth → SMTP; until then this is the first thing to fail under load.
 - **Cost is unmeasured against the real bill.** A segment costs one Claude vision call per
   shot plus one breakdown call over up to twelve frames. Confirm against the console after the
   first real week and adjust the plan caps in `lib/plans.ts`.

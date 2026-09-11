@@ -58,6 +58,17 @@ export const PLANS: Record<PlanId, PlanLimits> = {
   },
 };
 
+/**
+ * What Pro costs, in whole US dollars per month.
+ *
+ * The pricing page used to hardcode "$12" while the charge came from whatever
+ * STRIPE_PRICE_ID happened to point at. When those two disagree the customer
+ * is charged an amount the page never showed, which is a chargeback and a
+ * refund, not a support ticket. This constant is what the page renders and
+ * what `assertPriceMatches()` in lib/stripe.ts compares the live Price to.
+ */
+export const PRO_PRICE_USD_MONTHLY = 12;
+
 export function planLimits(plan: string | null | undefined): PlanLimits {
   return PLANS[(plan === "pro" ? "pro" : "free") as PlanId];
 }

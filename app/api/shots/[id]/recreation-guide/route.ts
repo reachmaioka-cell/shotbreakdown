@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { jsonError } from "@/lib/http";
 import { enqueueJob, findActiveJob } from "@/lib/pipeline/queue";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -67,6 +68,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to generate a recreation guide", 401);
+
+  // Generated on demand, one model call per shot, so it needs an inbox we have
+  // reached. Checked before the rate limit.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   const { data: profile } = await supabase
     .from("profiles")

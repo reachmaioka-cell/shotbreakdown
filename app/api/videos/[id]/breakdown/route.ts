@@ -1,8 +1,10 @@
 import { after } from "next/server";
 import { z } from "zod";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { jsonError } from "@/lib/http";
 import { enqueueJob, findActiveJob } from "@/lib/pipeline/queue";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceIpRateLimit, enforceRateLimit } from "@/lib/rate-limit";
+import { editorialHidden } from "@/lib/shots";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { readSegmentBreakdown } from "@/lib/validation";
@@ -43,7 +45,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const admin = createAdminClient();
   const { data: video } = await admin
     .from("videos")
-    .select("id, user_id, visibility, focus, breakdown, breakdown_status, breakdown_error")
+    .select(
+      "id, user_id, visibility, is_editorial, focus, breakdown, breakdown_status, breakdown_error"
+    )
     .eq("id", id)
     .maybeSingle();
 
@@ -51,6 +55,16 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
   const isOwner = !!user && video.user_id === user.id;
   if (!isOwner && video.visibility === "private") return jsonError("Not found", 404);
+
+  /*
+   * Belt and braces over the line above. What keeps the editorial corpus out
+   * of this response before launch is that its rows are private; this covers
+   * the window after scripts/publish-editorial.ts has made them public and
+   * before FEATURE_PUBLIC_LIBRARY is on.
+   */
+  if (await editorialHidden(video.is_editorial, isOwner, user?.id ?? null)) {
+    return jsonError("Not found", 404);
+  }
 
   const status = (video.breakdown_status as string | null) ?? "missing";
   // breakdown_error is the raw pipeline/provider message (worker.ts stores
@@ -77,6 +91,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Sign in to regenerate a breakdown", 401);
+
+  // A refocus is a model call, so it needs an inbox we have reached. Checked
+  // before the rate limit so an unverified caller spends nothing at all.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   const admin = createAdminClient();
   const { data: video } = await admin
@@ -110,6 +129,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     isPro ? { limit: 60 } : undefined
   );
   if (limited) return limited;
+
+  // The per-user budget bounds one account, and accounts are free.
+  const ipLimited = await enforceIpRateLimit("segment_breakdown_ip", request);
+  if (ipLimited) return ipLimited;
 
   // The body is optional: "regenerate, same question" is a bare POST with no
   // body at all, which request.json() would reject as malformed.

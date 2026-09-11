@@ -262,8 +262,10 @@ export function AiRecreation({
         return;
       }
       if (!res.ok) {
+        // message before error: the spending guards send the sentence a reader
+        // can act on in message, and a machine-readable code in error.
         setActionError(
-          data.error ?? "Could not start the AI guide. Try again.",
+          data.message ?? data.error ?? "Could not start the AI guide. Try again.",
         );
         return;
       }

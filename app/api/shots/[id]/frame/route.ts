@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { trackAsync } from "@/lib/analytics";
+import { requireVerifiedUser } from "@/lib/auth-guard";
 import { jsonError } from "@/lib/http";
 import { getShotFrames } from "@/lib/shots";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -33,6 +34,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return jsonError("Unauthorized", 401);
+
+  // The reanalyze branch below is a model call. Guarded at the top rather than
+  // beside it so an unverified caller does not spend an edit token either: this
+  // route only ever touches a shot the caller already owns, and an unverified
+  // account cannot have one, so nothing legitimate is refused here.
+  const unverified = requireVerifiedUser(user);
+  if (unverified) return unverified;
 
   const limited = await enforceRateLimit("edit", request, user.id);
   if (limited) return limited;

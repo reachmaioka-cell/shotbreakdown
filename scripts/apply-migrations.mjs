@@ -12,6 +12,20 @@ async function main() {
   }
 
   const isLocal = url.includes("127.0.0.1") || url.includes("localhost");
+
+  /*
+   * .env.local carries a LOCAL Supabase URL and a PRODUCTION DATABASE_URL, so
+   * `npm run db:migrate` with no argument reads the local file and writes the
+   * live database. Two migrations landed in production that way on 2026-09-11.
+   * Anything that is not plainly localhost now has to be asked for.
+   */
+  if (!isLocal && !process.argv.includes("--production")) {
+    const host = new URL(url).host;
+    console.error(`DATABASE_URL points at ${host}, which is not local.`);
+    console.error("Re-run as `npm run db:migrate -- --production` if that is what you meant.");
+    process.exit(1);
+  }
+
   const sql = postgres(url, { max: 1, ssl: isLocal ? false : "require" });
 
   try {

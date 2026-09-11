@@ -6,6 +6,7 @@ import {
   writePromptInsights,
   runLearningTick,
 } from "@/lib/cron-jobs";
+import { dailySegmentCap, segmentsCreatedToday } from "@/lib/capacity";
 import { drainQueue } from "@/lib/pipeline/worker";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -29,6 +30,13 @@ export async function GET(request: Request) {
     () => {}
   );
 
+  // What the site-wide ceiling has spent in the last 24 hours, so the daily log
+  // line says how close DAILY_SEGMENT_CAP came to turning people away.
+  const capacity = {
+    segmentsToday: await segmentsCreatedToday().catch(() => null),
+    cap: dailySegmentCap(),
+  };
+
   const insights = await writePromptInsights();
   let learning = { seeded: 0, claimed: 0, completed: 0, failed: 0, pending: 0, jobs: [] as unknown[] };
   try {
@@ -36,5 +44,5 @@ export async function GET(request: Request) {
   } catch (e) {
     console.error("learning tick failed", e instanceof Error ? e.message : e);
   }
-  return NextResponse.json({ ok: true, requeued, breakdowns, processed, insights, learning });
+  return NextResponse.json({ ok: true, requeued, breakdowns, processed, capacity, insights, learning });
 }

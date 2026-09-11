@@ -6,6 +6,7 @@
  * data is to ask the database as that user. Requires the local stack
  * (`npx supabase start`) and .env.local.
  */
+import { execFile } from "node:child_process";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -38,6 +39,43 @@ async function makeActor(admin: ReturnType<typeof createAdminClient>, tag: strin
 
   return { id: data.user.id, email, client };
 }
+
+/*
+ * The local stack, named explicitly rather than read from the environment.
+ * .env.local has held a production DATABASE_URL beside a local Supabase URL,
+ * and the editorial scripts treat that as a production target — correctly, and
+ * fatally for a test that wants to watch them actually run.
+ */
+const LOCAL_DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
+
+/**
+ * Run one of the editorial scripts the way a person runs it: its own process,
+ * its own argv. Importing it would prove the module parses; this proves the
+ * command works.
+ */
+function runScript(
+  script: string,
+  envOverrides: Record<string, string> = {},
+  dryRun = true
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      "npx",
+      ["tsx", script, ...(dryRun ? ["--dry-run"] : [])],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, DATABASE_URL: LOCAL_DATABASE_URL, ...envOverrides },
+      },
+      (error, stdout, stderr) => {
+        const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+        resolve({ code, stdout, stderr });
+      }
+    );
+  });
+}
+
+const runPublishScript = (envOverrides: Record<string, string> = {}, dryRun = true) =>
+  runScript("scripts/publish-editorial.ts", envOverrides, dryRun);
 
 suite("row level security — cross-user isolation", () => {
   const admin = createAdminClient();
@@ -187,6 +225,53 @@ suite("row level security — cross-user isolation", () => {
       .update({ plan: "pro" })
       .eq("id", intruder.id);
     expect(planError).toBeTruthy();
+  });
+
+  /*
+   * A save is a bookmark, not a grant. saved_shots' policy constrains user_id
+   * and says nothing about shot_id, so before 0032 an intruder could insert a
+   * row naming this fixture's private shot and read the whole card back through
+   * the 'saved' scope, which decided membership from that table alone. Both
+   * halves are pinned: the write is refused, and the read returns nothing even
+   * if a row ever gets in another way.
+   */
+  it("an intruder cannot save someone else's private shot", async () => {
+    const { error } = await intruder.client
+      .from("saved_shots")
+      .insert({ user_id: intruder.id, shot_id: shotId });
+    expect(error).not.toBeNull();
+    expect(error?.code).toBe("42501");
+  });
+
+  it("the saved scope does not return a private shot the viewer does not own", async () => {
+    // Placed by the service role, so the read is tested even with the write shut.
+    await admin.from("saved_shots").insert({ user_id: intruder.id, shot_id: shotId });
+    const { data } = await intruder.client.rpc("search_shots", {
+      p_query: null,
+      p_embedding: null,
+      p_filters: {},
+      p_limit: 20,
+      p_offset: 0,
+      p_viewer: intruder.id,
+      p_scope: "saved",
+    });
+    await admin.from("saved_shots").delete().eq("user_id", intruder.id).eq("shot_id", shotId);
+    expect((data ?? []).some((row: { id: string }) => row.id === shotId)).toBe(false);
+  });
+
+  it("the owner still sees their own private shot in the saved scope", async () => {
+    await owner.client.from("saved_shots").insert({ user_id: owner.id, shot_id: shotId });
+    const { data } = await owner.client.rpc("search_shots", {
+      p_query: null,
+      p_embedding: null,
+      p_filters: {},
+      p_limit: 20,
+      p_offset: 0,
+      p_viewer: owner.id,
+      p_scope: "saved",
+    });
+    await owner.client.from("saved_shots").delete().eq("user_id", owner.id).eq("shot_id", shotId);
+    expect((data ?? []).some((row: { id: string }) => row.id === shotId)).toBe(true);
   });
 
   it("search_shots does not leak private shots to another user", async () => {
@@ -590,4 +675,326 @@ suite("storage paths are pipeline-owned", () => {
       .eq("id", videoId);
     expect(mine.error).toBeNull();
   });
+
+  /*
+   * The review decision is the admin surface's to write. A client that could
+   * PATCH these through PostgREST could approve its own row and ride the launch
+   * script into the public library, which is the whole point of curating before
+   * publishing.
+   */
+  it("a user cannot write their own review decision", async () => {
+    for (const patch of [
+      { review_status: "approved" },
+      { reviewed_at: new Date().toISOString() },
+      { reviewed_by: attacker.id },
+    ]) {
+      const forged = await attacker.client.from("shots").update(patch).eq("id", shotId);
+      expect(forged.error, JSON.stringify(patch)).not.toBeNull();
+    }
+
+    const { data } = await admin
+      .from("shots")
+      .select("review_status, reviewed_at, reviewed_by")
+      .eq("id", shotId)
+      .single();
+    expect(data).toMatchObject({ review_status: "pending", reviewed_at: null, reviewed_by: null });
+  });
+});
+
+/**
+ * The editorial corpus, proven from both ends.
+ *
+ * The model is one claim: what keeps the corpus off the internet is that it is
+ * stored `private`, and nothing else — not a feature flag, not page code. That
+ * claim is only worth anything if the other half is proven too, so this runs
+ * scripts/publish-editorial.ts for real against the local database and checks
+ * that the same anonymous read that returned nothing now returns the row.
+ *
+ * Everything here talks to PostgREST with the publishable anon key, which is
+ * the key that ships in the browser bundle.
+ */
+suite("the editorial corpus is private until the launch script publishes it", () => {
+  const admin = createAdminClient();
+  let anonClient: SupabaseClient;
+  let stranger: Actor;
+  let approvedShotId: string;
+  let pendingShotId: string;
+  let videoId: string;
+  /*
+   * scripts/unpublish-editorial.ts is deliberately unscoped — any public
+   * editorial row is one it should pull back — so on a machine that already
+   * holds a seeded corpus it sweeps rows this suite never created. Noted here,
+   * before anything in the suite publishes, and put back at the end: running
+   * the tests must not be a data decision, and must not be able to turn into
+   * one if the script under test misbehaves.
+   */
+  const alreadyPublic: { shots: string[]; videos: string[] } = { shots: [], videos: [] };
+
+  beforeAll(async () => {
+    stranger = await makeActor(admin, "editorial-stranger");
+    anonClient = createClient(url!, anonKey!, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    for (const table of ["shots", "videos"] as const) {
+      const { data } = await admin
+        .from(table)
+        .select("id")
+        .eq("is_editorial", true)
+        .eq("visibility", "public");
+      alreadyPublic[table] = (data ?? []).map((row) => row.id as string);
+    }
+
+    const tag = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const { data: video, error: videoError } = await admin
+      .from("videos")
+      .insert({
+        source_type: "youtube",
+        source_url: `https://www.youtube.com/watch?v=pub-${tag}`,
+        title: `Editorial publish fixture ${tag}`,
+        status: "complete",
+        visibility: "private",
+        is_editorial: true,
+        shot_count: 2,
+        analyzed_shot_count: 2,
+      })
+      .select("id")
+      .single();
+    if (videoError) throw new Error(videoError.message);
+    videoId = video.id;
+
+    const shot = (reviewStatus: string, index: number) => ({
+      video_id: videoId,
+      user_id: null,
+      shot_index: index,
+      start_seconds: index * 4,
+      end_seconds: index * 4 + 4,
+      status: "complete",
+      visibility: "private",
+      review_status: reviewStatus,
+      is_editorial: true,
+      title: `Editorial publish fixture ${reviewStatus} ${tag}`,
+      slug: `editorial-publish-${reviewStatus}-${tag}`,
+      metadata: { description: "publish fixture", one_line_summary: "publish fixture" },
+    });
+
+    const { data: inserted, error: shotError } = await admin
+      .from("shots")
+      .insert([shot("approved", 0), shot("pending", 1)])
+      .select("id, review_status");
+    if (shotError) throw new Error(shotError.message);
+    approvedShotId = inserted!.find((row) => row.review_status === "approved")!.id;
+    pendingShotId = inserted!.find((row) => row.review_status === "pending")!.id;
+  }, 30_000);
+
+  afterAll(async () => {
+    await admin.from("shots").delete().in("id", [approvedShotId, pendingShotId]);
+    await admin.from("videos").delete().eq("id", videoId);
+    await admin.auth.admin.deleteUser(stranger.id);
+    for (const table of ["shots", "videos"] as const) {
+      if (alreadyPublic[table].length > 0) {
+        await admin.from(table).update({ visibility: "public" }).in("id", alreadyPublic[table]);
+      }
+    }
+  });
+
+  it("an anonymous caller holding the anon key reads none of it", async () => {
+    const { data, error } = await anonClient
+      .from("shots")
+      .select("id, title, metadata")
+      .in("id", [approvedShotId, pendingShotId]);
+    expect(error).toBeNull();
+    expect(data).toEqual([]);
+  });
+
+  it("a signed-in non-admin reads none of it either", async () => {
+    const { data, error } = await stranger.client
+      .from("shots")
+      .select("id")
+      .in("id", [approvedShotId, pendingShotId]);
+    expect(error).toBeNull();
+    expect(data).toEqual([]);
+  });
+
+  it("the publish script refuses a production target without --yes", async () => {
+    const production = {
+      DATABASE_URL: "postgresql://postgres:pw@db.example.supabase.com:5432/postgres",
+    };
+    const result = await runPublishScript(production, false);
+    expect(result.code).not.toBe(0);
+    expect(`${result.stderr}${result.stdout}`).toContain("--yes");
+
+    // A dry run against production is still allowed — it is the step the
+    // runbook asks for before the real one.
+    const dry = await runPublishScript(production);
+    expect(dry.code).toBe(0);
+    expect(dry.stdout).toContain("PRODUCTION");
+
+    const { data } = await admin
+      .from("shots")
+      .select("visibility")
+      .eq("id", approvedShotId)
+      .single();
+    expect(data?.visibility).toBe("private");
+  });
+
+  it("--dry-run counts the approved rows and changes nothing", async () => {
+    const result = await runPublishScript();
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("dry run: nothing changed");
+
+    const { data } = await admin
+      .from("shots")
+      .select("id, visibility")
+      .in("id", [approvedShotId, pendingShotId]);
+    expect(data?.every((row) => row.visibility === "private")).toBe(true);
+  });
+
+  it("publishing makes the approved row anonymously readable, and only that one", async () => {
+    const result = await runPublishScript({}, false);
+    expect(result.code).toBe(0);
+
+    const { data, error } = await anonClient
+      .from("shots")
+      .select("id, title, metadata")
+      .in("id", [approvedShotId, pendingShotId]);
+    expect(error).toBeNull();
+    expect(data?.map((row) => row.id)).toEqual([approvedShotId]);
+    // The whole analysis, which is what publishing actually hands over.
+    expect(data?.[0]?.metadata).not.toBeNull();
+
+    // The video row goes with it, or the shot page links at a 404.
+    const { data: videoRows } = await anonClient.from("videos").select("id").eq("id", videoId);
+    expect(videoRows?.map((row) => row.id)).toEqual([videoId]);
+  });
+
+  it("is idempotent: a second run finds nothing left to publish", async () => {
+    const result = await runPublishScript({}, false);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("0 approved shots");
+  });
+
+  it("unpublish-editorial.ts takes it back out of reach", async () => {
+    const result = await runScript("scripts/unpublish-editorial.ts", {}, false);
+    expect(result.code).toBe(0);
+
+    const { data, error } = await anonClient
+      .from("shots")
+      .select("id")
+      .in("id", [approvedShotId, pendingShotId]);
+    expect(error).toBeNull();
+    expect(data).toEqual([]);
+  });
+});
+
+/**
+ * The corpus the plan describes is a few hundred shots, and the launch script
+ * has to survive one.
+ *
+ * PostgREST carries an `in` filter in the query string, and the gateway in
+ * front of it answers `URI too long` once the list of uuids gets big: measured
+ * against this stack, one filter of 250 ids fails where 200 goes through. Sent
+ * in a single filter, `publish-editorial.ts` would have thrown at launch with
+ * the corpus half public, and `unpublish-editorial.ts` — the way back — would
+ * have thrown in exactly the situation it exists for.
+ */
+suite("the launch scripts survive a corpus bigger than one PostgREST filter", () => {
+  const admin = createAdminClient();
+  const OVER_ONE_FILTER = 260;
+  let videoId: string;
+  let shotIds: string[] = [];
+  /* Same bystander guard as the suite above: the scripts are not scoped to
+   * this fixture, so whatever was already public is put back afterwards. */
+  const alreadyPublic: { shots: string[]; videos: string[] } = { shots: [], videos: [] };
+
+  beforeAll(async () => {
+    for (const table of ["shots", "videos"] as const) {
+      const { data } = await admin
+        .from(table)
+        .select("id")
+        .eq("is_editorial", true)
+        .eq("visibility", "public");
+      alreadyPublic[table] = (data ?? []).map((row) => row.id as string);
+    }
+
+    const tag = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const { data: video, error: videoError } = await admin
+      .from("videos")
+      .insert({
+        source_type: "youtube",
+        source_url: `https://www.youtube.com/watch?v=bulk-${tag}`,
+        title: `Editorial bulk fixture ${tag}`,
+        status: "complete",
+        visibility: "private",
+        is_editorial: true,
+        shot_count: OVER_ONE_FILTER,
+        analyzed_shot_count: OVER_ONE_FILTER,
+      })
+      .select("id")
+      .single();
+    if (videoError) throw new Error(videoError.message);
+    videoId = video.id;
+
+    const { data: inserted, error: shotError } = await admin
+      .from("shots")
+      .insert(
+        Array.from({ length: OVER_ONE_FILTER }, (_, index) => ({
+          video_id: videoId,
+          user_id: null,
+          shot_index: index,
+          start_seconds: index,
+          end_seconds: index + 1,
+          status: "complete",
+          visibility: "private",
+          review_status: "approved",
+          is_editorial: true,
+          title: `Editorial bulk fixture shot ${index} ${tag}`,
+          slug: `editorial-bulk-${tag}-${index}`,
+          metadata: { description: "bulk fixture", one_line_summary: "bulk fixture" },
+        }))
+      )
+      .select("id");
+    if (shotError) throw new Error(shotError.message);
+    shotIds = (inserted ?? []).map((row) => row.id as string);
+  }, 60_000);
+
+  afterAll(async () => {
+    await admin.from("shots").delete().eq("video_id", videoId);
+    await admin.from("videos").delete().eq("id", videoId);
+    for (const table of ["shots", "videos"] as const) {
+      if (alreadyPublic[table].length > 0) {
+        await admin.from(table).update({ visibility: "public" }).in("id", alreadyPublic[table]);
+      }
+    }
+  });
+
+  const publicCount = async () => {
+    const { count } = await admin
+      .from("shots")
+      .select("id", { count: "exact", head: true })
+      .eq("video_id", videoId)
+      .eq("visibility", "public");
+    return count ?? 0;
+  };
+
+  it("publishes every approved row, not just the first filter's worth", async () => {
+    expect(shotIds).toHaveLength(OVER_ONE_FILTER);
+    const result = await runPublishScript({}, false);
+    expect(`${result.stdout}${result.stderr}`).not.toContain("URI too long");
+    expect(result.code).toBe(0);
+    expect(await publicCount()).toBe(OVER_ONE_FILTER);
+  }, 60_000);
+
+  it("and takes every one of them back private", async () => {
+    // Put the whole fixture back in the state unpublish exists for, without
+    // going through publish again: this half has to hold on its own.
+    await admin.from("shots").update({ visibility: "public" }).eq("video_id", videoId);
+    await admin.from("videos").update({ visibility: "public" }).eq("id", videoId);
+    expect(await publicCount()).toBe(OVER_ONE_FILTER);
+
+    const result = await runScript("scripts/unpublish-editorial.ts", {}, false);
+    expect(`${result.stdout}${result.stderr}`).not.toContain("URI too long");
+    expect(result.code).toBe(0);
+    expect(await publicCount()).toBe(0);
+  }, 60_000);
 });

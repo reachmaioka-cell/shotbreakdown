@@ -1,6 +1,6 @@
 import { getCollection, type CollectionItem } from "@/lib/collections";
 import { humanize } from "@/lib/filters";
-import { formatDuration, formatTimecode, getShot, searchShots } from "@/lib/shots";
+import { editorialHidden, formatDuration, formatTimecode, getShot, searchShots } from "@/lib/shots";
 import { fetchAnalysisImage } from "@/lib/media";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
@@ -159,6 +159,21 @@ export async function buildExportPayload(
   }
 
   if (resourceType === "video") {
+    const admin = createAdminClient();
+    const { data: videoRow } = await admin
+      .from("videos")
+      .select("title, user_id, is_editorial, breakdown, focus")
+      .eq("id", resourceId)
+      .maybeSingle();
+    /*
+     * `mine` is scoped to the caller, but `public` is not scoped to the
+     * library flag: a published editorial segment would otherwise export as a
+     * CSV or a PDF of the whole corpus entry while the library it belongs to is
+     * still switched off. An export must never widen access.
+     */
+    const isOwner = viewerId !== null && videoRow?.user_id === viewerId;
+    if (await editorialHidden(videoRow?.is_editorial, isOwner, viewerId)) return null;
+
     const result = await searchShots({
       filters: { video_id: resourceId },
       limit: 96,
@@ -187,12 +202,6 @@ export async function buildExportPayload(
         })
     );
 
-    const admin = createAdminClient();
-    const { data: videoRow } = await admin
-      .from("videos")
-      .select("title, breakdown, focus")
-      .eq("id", resourceId)
-      .maybeSingle();
     const breakdown = readSegmentBreakdown(videoRow?.breakdown);
 
     return {

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isVerified } from "@/lib/auth-guard";
 import { FEATURES } from "@/lib/features";
 import { createClient } from "@/lib/supabase/server";
 import { FREE_LIMIT } from "@/lib/constants";
@@ -21,6 +22,9 @@ export async function GET() {
 
   return NextResponse.json({
     authed: true,
+    // The spending routes refuse an unconfirmed address, so the client needs to
+    // be able to say why before the user has spent an upload finding out.
+    verified: isVerified(user),
     plan,
     isPro: plan === "pro",
     // Only advertise the console when it is actually reachable.

@@ -10,7 +10,17 @@
  *   npm run db:seed:music -- --dry-run
  *   npm run db:seed:music -- --max-videos=1 --target=18
  *
- * Does not write `submissions`. Recreation guides stay on-demand.
+ * Everything written here is `private` and `review_status = 'pending'`. A row
+ * with `visibility = 'public'` is readable by anyone straight from PostgREST
+ * with the publishable anon key that ships in the browser bundle, so the corpus
+ * can only be accumulated before launch by storing it private; an admin
+ * approves rows at /admin/review and scripts/publish-editorial.ts makes the
+ * approved ones public at launch. See docs/editorial-runbook.md.
+ *
+ * Does not write `submissions`, and deliberately writes no segment breakdown:
+ * the editorial artefact is the per-shot recreation guide, generated on demand
+ * at /api/shots/[id]/recreation-guide. A whole music video is not a segment,
+ * and a breakdown of one would describe an edit nobody asked about.
  */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -22,6 +32,7 @@ import { promisify } from "node:util";
 import { extractYoutubeId } from "@/lib/clip";
 import { UPLOAD_BUCKET } from "@/lib/constants";
 import { embed, shotEmbeddingText } from "@/lib/embeddings";
+import { spreadFrames } from "@/lib/segment-breakdown";
 import { analyzeShotFrames, SHOT_PROMPT_VERSION } from "@/lib/shot-analysis";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { extractFrameAt, extractRepresentativeFrame } from "@/lib/video/ffmpeg";
@@ -49,8 +60,18 @@ const MUSIC_SHOT_DETECTION = {
   threshold: 0.3,
   minShotSeconds: 1.35,
   maxShotSeconds: 30,
-  maxShots: 18,
+  /*
+   * Detect across the whole video. segmentShots stops at maxShots and returns
+   * the FIRST that many, so the old cap of 18 handed the sampling below nothing
+   * but the opening 75 seconds of a three-and-a-half-minute music video — the
+   * very thing spreading the sample is meant to avoid. This is ffmpeg work, not
+   * model work; what a run costs is set by SHOTS_PER_VIDEO and --target.
+   */
+  maxShots: 120,
 };
+
+/** How many of the detected shots are kept, analysed and stored per video. */
+const SHOTS_PER_VIDEO = 18;
 
 const MIN_DURATION_SEC = 30;
 const MAX_DURATION_SEC = 15 * 60;
@@ -434,13 +455,19 @@ async function existingYoutubeIds(admin: ReturnType<typeof createAdminClient>) {
   return ids;
 }
 
+/*
+ * How much corpus there already is. Counted across every visibility on
+ * purpose: what this seeder writes is private until launch, so counting the
+ * public rows would report an empty library on every run and keep re-seeding
+ * material already in hand.
+ */
 async function countMusicShots(admin: ReturnType<typeof createAdminClient>) {
   const { count, error } = await admin
     .from("shots")
     .select("id", { count: "exact", head: true })
     .contains("tags", ["music-video"])
     .eq("status", "complete")
-    .eq("visibility", "public");
+    .eq("is_editorial", true);
   if (error) throw new Error(error.message);
   return count ?? 0;
 }
@@ -473,8 +500,15 @@ async function seedVideo(
     const file = await downloadVideo(meta.webpage_url, dir);
     log("  detecting shots");
     const detection = await detectShots(file, MUSIC_SHOT_DETECTION);
-    const wanted = detection.shots.slice(0, Math.min(MUSIC_SHOT_DETECTION.maxShots, remaining));
-    log(`  ${detection.shots.length} shots detected, taking ${wanted.length}`);
+    /*
+     * Spread across the whole runtime rather than taking the opening shots.
+     * `slice(0, n)` built a corpus of intros and title cards — the one part of
+     * a music video that is least like the rest of it. spreadFrames keeps the
+     * first and last cut and walks evenly between them, so the sample covers
+     * the piece.
+     */
+    const wanted = spreadFrames(detection.shots, Math.min(SHOTS_PER_VIDEO, remaining));
+    log(`  ${detection.shots.length} shots detected, taking ${wanted.length} spread across the runtime`);
 
     if (wanted.length === 0) return stats;
     if (DRY_RUN) {
@@ -489,7 +523,8 @@ async function seedVideo(
       return stats;
     }
 
-    const coveredSpan = wanted[wanted.length - 1].endSeconds;
+    const spanStart = wanted[0].startSeconds;
+    const spanEnd = wanted[wanted.length - 1].endSeconds;
 
     const { data: video, error: videoError } = await admin
       .from("videos")
@@ -498,17 +533,21 @@ async function seedVideo(
         source_url: meta.webpage_url,
         title: meta.title,
         status: "analyzing",
-        visibility: "public",
+        // Private until scripts/publish-editorial.ts runs at launch. RLS makes
+        // a private row with no owner unreadable to every anon and
+        // authenticated caller, which is the only thing that actually keeps the
+        // corpus off PostgREST.
+        visibility: "private",
         is_editorial: true,
-        // Only the opening shots are kept, so the span covered is the last
-        // kept shot's out point — not the runtime of the music video. The
-        // pipeline uses duration_seconds for the analyzed span and
-        // source_duration_seconds for what it was cut from; a seeded row that
-        // filled the first with the whole runtime drew a three-minute ruler
-        // under twenty seconds of shots. segment_start/segment_end stay null:
-        // the line they drive reads "of a 3:50 upload", which is not what a
-        // music video on YouTube is.
-        duration_seconds: coveredSpan,
+        // A sample, not the whole cut, so the span covered runs from the first
+        // kept shot's in point to the last one's out point. The pipeline uses
+        // duration_seconds for the analyzed span, segment_start/segment_end for
+        // where that span sits in the source, and source_duration_seconds for
+        // the whole thing; a seeded row that filled the first with the runtime
+        // drew a three-minute ruler under twenty seconds of shots.
+        duration_seconds: spanEnd - spanStart,
+        segment_start: spanStart,
+        segment_end: spanEnd,
         source_duration_seconds: detection.probe.durationSeconds,
         width: detection.probe.width,
         height: detection.probe.height,
@@ -527,8 +566,9 @@ async function seedVideo(
 
     let posterPath: string | null = null;
     // A shot that fails analysis leaves no row, so the span the stored shots
-    // actually cover is the last one that made it in.
-    let insertedSpan = 0;
+    // actually cover runs between the first and last that made it in.
+    let insertedStart = Number.POSITIVE_INFINITY;
+    let insertedEnd = 0;
 
     for (const shot of wanted) {
       const stillPath = join(dir, `shot-${shot.index}.jpg`);
@@ -584,7 +624,10 @@ async function seedVideo(
             embedding: vector,
             prompt_version: SHOT_PROMPT_VERSION,
             status: "complete",
-            visibility: "public",
+            // Same reason as the video row: private is what hides it, and
+            // review_status is the axis an admin moves without exposing it.
+            visibility: "private",
+            review_status: "pending",
             is_editorial: true,
             tags,
             aspect_ratio: detection.probe.aspectRatio,
@@ -600,11 +643,39 @@ async function seedVideo(
           .single();
         if (shotError || !inserted) throw new Error(shotError?.message ?? "shot insert failed");
 
+        /*
+         * The still this row was analyzed from, recorded as a frame the way an
+         * upload's frames are. Without it the shot page's frame strip is empty
+         * and representative_frame_id is null, so a seeded shot reads as a
+         * lesser thing than an uploaded one on the same page. One frame, not a
+         * candidate set: there is only ever one still per seeded shot.
+         */
+        const { data: frame, error: frameError } = await admin
+          .from("shot_frames")
+          .insert({
+            shot_id: inserted.id,
+            video_id: video.id,
+            user_id: null,
+            timestamp_seconds: shot.startSeconds + shot.durationSeconds / 2,
+            storage_path: storagePath,
+            thumb_path: storagePath,
+            width: detection.probe.width,
+            height: detection.probe.height,
+            is_representative: true,
+          })
+          .select("id")
+          .single();
+        if (frameError || !frame) throw new Error(frameError?.message ?? "frame insert failed");
+
         const slug = slugify(record.one_line_summary || meta.title, inserted.id as string);
-        await admin.from("shots").update({ slug }).eq("id", inserted.id);
+        await admin
+          .from("shots")
+          .update({ slug, representative_frame_id: frame.id })
+          .eq("id", inserted.id);
 
         if (!posterPath) posterPath = storagePath;
-        insertedSpan = Math.max(insertedSpan, shot.endSeconds);
+        insertedStart = Math.min(insertedStart, shot.startSeconds);
+        insertedEnd = Math.max(insertedEnd, shot.endSeconds);
         stats.inserted += 1;
         if (source.catalog === "k-pop") stats.kpop += 1;
         else stats.ll += 1;
@@ -633,7 +704,9 @@ async function seedVideo(
         progress: 100,
         shot_count: stats.inserted,
         analyzed_shot_count: stats.inserted,
-        duration_seconds: insertedSpan,
+        duration_seconds: insertedEnd - insertedStart,
+        segment_start: insertedStart,
+        segment_end: insertedEnd,
         poster_path: posterPath,
         completed_at: new Date().toISOString(),
       })

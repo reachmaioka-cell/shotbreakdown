@@ -2,14 +2,34 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { buttonClass } from "@/components/ui/primitives";
 
-export function AdminActions({ shotId }: { shotId: string }) {
+const DONE_LABEL = { approve: "Approved", reject: "Rejected" } as const;
+
+/**
+ * Approve and Reject, and nothing else.
+ *
+ * Publishing used to live here. It does not any more: making a row public is
+ * what exposes it through PostgREST to anyone holding the anon key, so it is a
+ * single deliberate act at launch (scripts/publish-editorial.ts), not a button
+ * pressed sixty times during curation.
+ *
+ * An approved row still offers Reject, because the only chance to take a wrong
+ * call back is before the launch script runs.
+ */
+export function AdminActions({
+  shotId,
+  reviewStatus,
+}: {
+  shotId: string;
+  reviewStatus: "pending" | "approved";
+}) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
+  const [done, setDone] = useState<keyof typeof DONE_LABEL | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function act(action: "publish" | "reject") {
+  async function act(action: keyof typeof DONE_LABEL) {
     setBusy(action);
     setError(null);
     try {
@@ -31,26 +51,28 @@ export function AdminActions({ shotId }: { shotId: string }) {
   }
 
   if (done) {
-    return <span className="shrink-0 text-[12px] text-ok">{done === "publish" ? "Published" : "Rejected"}</span>;
+    return <span className="shrink-0 text-[12px] text-ok">{DONE_LABEL[done]}</span>;
   }
 
   return (
     <div className="flex shrink-0 items-center gap-2">
-      <button
-        type="button"
-        onClick={() => void act("publish")}
-        disabled={busy !== null}
-        className="inline-flex h-7 items-center rounded-[3px] bg-text-0 px-2.5 text-[12px] font-medium text-ink-0 disabled:opacity-40"
-      >
-        {busy === "publish" ? "…" : "Publish"}
-      </button>
+      {reviewStatus === "pending" ? (
+        <button
+          type="button"
+          onClick={() => void act("approve")}
+          disabled={busy !== null}
+          className={buttonClass("primary", "sm")}
+        >
+          {busy === "approve" ? "…" : "Approve"}
+        </button>
+      ) : null}
       <button
         type="button"
         onClick={() => void act("reject")}
         disabled={busy !== null}
-        className="inline-flex h-7 items-center rounded-[3px] border border-line px-2.5 text-[12px] text-text-1 hover:text-danger disabled:opacity-40"
+        className={buttonClass("danger", "sm")}
       >
-        Reject
+        {busy === "reject" ? "…" : "Reject"}
       </button>
       {error ? <span className="text-[11px] text-danger">{error}</span> : null}
     </div>

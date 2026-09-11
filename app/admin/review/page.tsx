@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { SiteHeader } from "@/components/site-header";
 import { FEATURES } from "@/lib/features";
 import { humanize } from "@/lib/filters";
-import { resolveMediaUrl } from "@/lib/media";
+import { resolveMediaUrlMap } from "@/lib/media";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { AdminActions } from "./admin-actions";
@@ -14,6 +14,11 @@ export const dynamic = "force-dynamic";
 /**
  * Editorial review. Publishing to the public library is an explicit decision
  * here — it is deliberately not something crowd ratings can trigger.
+ *
+ * The queue holds editorial rows only. `is_editorial` is writable by the
+ * service role alone (protect_shot_columns), so the only things that reach
+ * this page are what the seeders and this route put there — never a
+ * customer's private upload, which nobody asked us to publish.
  */
 export default async function AdminReviewPage() {
   if (!FEATURES.adminReview) notFound();
@@ -38,18 +43,20 @@ export default async function AdminReviewPage() {
       "id, title, summary, thumbnail_path, visibility, view_count, save_count, created_at, shot_size, movement_type, lighting_key, videos ( title, source_type )"
     )
     .eq("status", "complete")
+    .eq("is_editorial", true)
     .neq("visibility", "public")
     .not("metadata", "is", null)
     .order("save_count", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(60);
 
-  const rows = await Promise.all(
-    (candidates ?? []).map(async (row) => ({
-      ...row,
-      thumbUrl: await resolveMediaUrl(row.thumbnail_path as string | null),
-    }))
+  const thumbs = await resolveMediaUrlMap(
+    (candidates ?? []).map((row) => row.thumbnail_path as string | null)
   );
+  const rows = (candidates ?? []).map((row) => ({
+    ...row,
+    thumbUrl: thumbs.get((row.thumbnail_path as string | null) ?? "") ?? null,
+  }));
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -62,8 +69,9 @@ export default async function AdminReviewPage() {
           </Link>
         </div>
         <p className="mb-6 text-[13px] text-text-2">
-          Publishing a shot makes it visible in the public library and indexable. Only publish
-          shots whose owner intended them to be shared.
+          Editorial shots that are not public yet. Publishing one makes its page readable by
+          anyone holding the link, and lists it in the library once that flag is on. Rejecting
+          drops it from the corpus for good.
         </p>
 
         {rows.length === 0 ? (

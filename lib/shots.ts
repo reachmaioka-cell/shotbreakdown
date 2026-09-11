@@ -1,4 +1,5 @@
 import { clipSourceUrl, preferClipFrame } from "@/lib/clip";
+import { FEATURES } from "@/lib/features";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolveMediaUrl } from "@/lib/media";
 import { ShotMetadataSchema, type ShotMetadata } from "@/lib/validation";
@@ -353,6 +354,18 @@ export type ShotDetail = {
   } | null;
 };
 
+/**
+ * Editorial rows are the reference corpus: seeded from footage nobody here
+ * shot, owned by no user, and only ever meant to be read through the public
+ * library. `visibility = 'public'` on one of them means "cleared for that
+ * library", not "readable now", so while the library is off a non-owner read is
+ * a miss. Without this the corpus can be accumulated before launch only at the
+ * price of serving it to anyone who guesses a slug.
+ */
+function editorialHidden(isEditorial: unknown, isOwner: boolean): boolean {
+  return !FEATURES.publicLibrary && !isOwner && isEditorial === true;
+}
+
 /** True only when the stored breakdown carries the technique spine with something in it. */
 function hasTechniqueSection(raw: unknown): boolean {
   const technique = (raw as { technique?: Record<string, unknown> } | null)?.technique;
@@ -380,7 +393,7 @@ export async function getShot(
       `id, slug, video_id, user_id, shot_index, title, metadata, metadata_edits,
        start_seconds, end_seconds, duration_seconds, representative_timestamp,
        representative_frame_id, poster_path, thumbnail_path, width, height,
-       aspect_ratio, tags, visibility, status, error_message, view_count, save_count, created_at,
+       aspect_ratio, tags, visibility, is_editorial, status, error_message, view_count, save_count, created_at,
        videos!inner ( id, title, source_type, source_url, file_path, duration_seconds, shot_count, visibility, user_id, breakdown_status, breakdown )`
     )
     .eq(column, shotId)
@@ -392,6 +405,7 @@ export async function getShot(
   const isPublic = data.visibility === "public";
   const isUnlisted = data.visibility === "unlisted";
   if (!isOwner && !isPublic && !(isUnlisted && options.allowUnlisted)) return null;
+  if (editorialHidden(data.is_editorial, isOwner)) return null;
 
   const rawMetadata = data.metadata as Record<string, unknown> | null;
   const merged = rawMetadata
@@ -471,13 +485,14 @@ export async function getShotFrames(
   const admin = createAdminClient();
   const { data: shot } = await admin
     .from("shots")
-    .select("id, user_id, visibility")
+    .select("id, user_id, visibility, is_editorial")
     .eq("id", shotId)
     .maybeSingle();
 
   if (!shot) return [];
   const isOwner = viewerId !== null && shot.user_id === viewerId;
   if (!isOwner && !(options.allowPublic && shot.visibility !== "private")) return [];
+  if (editorialHidden(shot.is_editorial, isOwner)) return [];
 
   const { data } = await admin
     .from("shot_frames")

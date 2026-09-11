@@ -489,6 +489,8 @@ async function seedVideo(
       return stats;
     }
 
+    const coveredSpan = wanted[wanted.length - 1].endSeconds;
+
     const { data: video, error: videoError } = await admin
       .from("videos")
       .insert({
@@ -498,7 +500,16 @@ async function seedVideo(
         status: "analyzing",
         visibility: "public",
         is_editorial: true,
-        duration_seconds: detection.probe.durationSeconds,
+        // Only the opening shots are kept, so the span covered is the last
+        // kept shot's out point — not the runtime of the music video. The
+        // pipeline uses duration_seconds for the analyzed span and
+        // source_duration_seconds for what it was cut from; a seeded row that
+        // filled the first with the whole runtime drew a three-minute ruler
+        // under twenty seconds of shots. segment_start/segment_end stay null:
+        // the line they drive reads "of a 3:50 upload", which is not what a
+        // music video on YouTube is.
+        duration_seconds: coveredSpan,
+        source_duration_seconds: detection.probe.durationSeconds,
         width: detection.probe.width,
         height: detection.probe.height,
         fps: detection.probe.fps,
@@ -515,6 +526,9 @@ async function seedVideo(
     }
 
     let posterPath: string | null = null;
+    // A shot that fails analysis leaves no row, so the span the stored shots
+    // actually cover is the last one that made it in.
+    let insertedSpan = 0;
 
     for (const shot of wanted) {
       const stillPath = join(dir, `shot-${shot.index}.jpg`);
@@ -576,6 +590,11 @@ async function seedVideo(
             aspect_ratio: detection.probe.aspectRatio,
             width: detection.probe.width,
             height: detection.probe.height,
+            // The still this row was analyzed from cannot show a ramp, a freeze
+            // or a hold; the per-shot series detectShots already measured can,
+            // and the breakdown prompt reads it. Without it a seeded shot gets
+            // a worse description than an uploaded one.
+            motion_profile: shot.motion,
           })
           .select("id")
           .single();
@@ -585,6 +604,7 @@ async function seedVideo(
         await admin.from("shots").update({ slug }).eq("id", inserted.id);
 
         if (!posterPath) posterPath = storagePath;
+        insertedSpan = Math.max(insertedSpan, shot.endSeconds);
         stats.inserted += 1;
         if (source.catalog === "k-pop") stats.kpop += 1;
         else stats.ll += 1;
@@ -613,6 +633,7 @@ async function seedVideo(
         progress: 100,
         shot_count: stats.inserted,
         analyzed_shot_count: stats.inserted,
+        duration_seconds: insertedSpan,
         poster_path: posterPath,
         completed_at: new Date().toISOString(),
       })

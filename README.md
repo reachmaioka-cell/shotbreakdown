@@ -74,7 +74,7 @@ pasted link or a still upload. `FEATURE_SIMILAR_SHOTS` only hides the panel on t
 | `FEATURE_TAXONOMY_PAGES` | Programmatic technique pages under `/camera-movements`, `/lighting` and the rest of `TAXONOMY_GROUPS` |
 | `FEATURE_TAG_PAGES` | `/tags/[tag]` pages |
 | `FEATURE_LEARN_PAGES` | `/learn/[topic]` articles |
-| `FEATURE_SIMILAR_SHOTS` | The "Visually similar" panel on the shot page — meaningless over one user's own shots. Only the panel: the `/api/shots/[id]/similar` route is unflagged and still serves |
+| `FEATURE_SIMILAR_SHOTS` | The "Visually similar" panel on the shot page — meaningless over one user's own shots. The `/api/shots/[id]/similar` route is flagged too and returns 404 for everyone while off |
 | `FEATURE_ONBOARDING` | The `/onboarding` interstitial. Off, new users go straight to the app |
 | `FEATURE_ADMIN_REVIEW` | `/admin/review`, the editorial queue that publishes shots to the library |
 | `FEATURE_ADMIN_LEARNING` | `/admin/learning`, the knowledge-ingestion console |

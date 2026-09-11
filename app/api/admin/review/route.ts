@@ -39,24 +39,34 @@ export async function POST(request: Request) {
 
   const service = createAdminClient();
 
+  // Both actions are limited to editorial rows. Without that, a shot id typed
+  // into this endpoint would publish any customer's private upload.
   if (parsed.data.action === "publish") {
-    const { error } = await service
+    const { data, error } = await service
       .from("shots")
-      .update({ visibility: "public", is_editorial: true })
+      .update({ visibility: "public" })
       .eq("id", parsed.data.shotId)
-      .eq("status", "complete");
+      .eq("status", "complete")
+      .eq("is_editorial", true)
+      .select("id");
     if (error) return jsonError(error.message, 500);
+    if (!data?.length) return jsonError("Not found", 404);
 
     // Published shots become part of the retrieval corpus for future analyses.
     void import("@/lib/learning/hooks")
       .then(({ queueVerifiedLearning }) => queueVerifiedLearning(parsed.data.shotId))
       .catch(() => {});
   } else {
-    const { error } = await service
+    // Clearing the editorial flag is what makes a rejection stick: the row
+    // drops out of the queue instead of coming back on the next load.
+    const { data, error } = await service
       .from("shots")
-      .update({ visibility: "private" })
-      .eq("id", parsed.data.shotId);
+      .update({ visibility: "private", is_editorial: false })
+      .eq("id", parsed.data.shotId)
+      .eq("is_editorial", true)
+      .select("id");
     if (error) return jsonError(error.message, 500);
+    if (!data?.length) return jsonError("Not found", 404);
   }
 
   return NextResponse.json({ ok: true });

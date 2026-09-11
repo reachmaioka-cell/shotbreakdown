@@ -372,9 +372,23 @@ every other app page. Batch thumbnails (done), placeholder for a dead thumbnail 
 green and extend it: pending→approved→rejected transitions, `reviewed_by` set to the acting
 admin, a non-editorial id 404s on both actions.
 
-**C.4 Close the remaining reachability gap.** `app/videos/[id]/page.tsx:104` gates on
-`visibility !== 'public'` only; with the corpus private this is already closed by RLS, but add
-the same `editorialHidden` check there so a later publish-before-flag window is covered too.
+**C.4 The four leaks the isolation lane measured, and why the model closes them.** Probing a
+running server with a `public` editorial row present and every flag off: (1) `GET /videos/<id>`
+rendered the whole editorial segment page anonymously (`app/videos/[id]/page.tsx:104` gates on
+`visibility !== 'public'` only); (2) `GET /api/videos/<id>/breakdown` served the full breakdown
+document anonymously (`:53` refuses only `private`); (3) `GET /api/videos/<id>` returned the row
+to any signed-in user through RLS; (4) a signed-in user could `POST /api/shots/<id>/save` an
+editorial shot and read it back in full through `?scope=saved`. Every one of them exists only
+because the row was `public`. With editorial rows `private` until the launch script runs, RLS
+returns nothing for (1)–(4) to anyone but the service role, and after launch they are the public
+library working as intended. Do add the `editorialHidden` check to the video page and the
+breakdown route as belt and braces for the publish-before-flag window, and have
+`tests/editorial-isolation.test.ts` pin all four surfaces against a private editorial row.
+Also from that lane: `/api/shots/[id]/similar` **is** flagged (`FEATURES.similarShots`, 404 for
+everyone) — `LAUNCH_PLAN.md`'s note that it is unflagged was stale and is corrected; and
+`POST /api/shots/[id]/view` increments `view_count` on any id with no visibility check, which
+leaks nothing but lets anyone inflate a counter the library may one day rank by — add a
+visibility check while in there.
 
 **C.5 Launch script.** `scripts/publish-editorial.ts` (`npm run editorial:publish -- --dry-run`
 first): sets `visibility = 'public'` on shots (and their videos) where `is_editorial and

@@ -299,23 +299,109 @@ if present; it is not read anywhere.
 
 ### Phase C — Editorial library priming
 
-See the appendix at the end of this file, written from the `prime-editorial-library` workflow's
-results: the seeder change, the isolation proof, and the admin runbook. In short: the seeder now
-records `motion_profile`; with `FEATURE_PUBLIC_LIBRARY` off the corpus is invisible on every
-surface that was exercised; `/admin/review` is gated three ways (flag, session, `is_admin`).
+**What the `prime-editorial-library` workflow established (2026-09-11), all by running, not
+reading.** The seeder and the admin page as built cannot deliver "accumulate now, invisible
+until launch":
 
-Production steps, once Ken's step 6 is done:
+- `scripts/seed-music-clips.ts` wrote every seeded video and shot as `visibility: 'public'`,
+  `is_editorial: true`. `/admin/review` listed `visibility <> 'public'`, so seeded rows never
+  entered the queue; and `app/shots/[slug]/page.tsx` never consults `FEATURE_PUBLIC_LIBRARY`
+  (only `/library`, `/api/shots/search`, `sitemap.ts` and `robots.ts` do), so a seeded shot page
+  returned **200 with the full breakdown anonymously** with every flag off.
+- Worse, and decisive: **`visibility = 'public'` is readable by anyone through Supabase's REST
+  API with the anon key** (`shots public select` policy, roles `anon, authenticated`), and the
+  anon key ships in the browser bundle. Proven locally:
+  `GET /rest/v1/shots?is_editorial=eq.true&visibility=eq.public&select=id,summary,metadata`
+  with only the anon key → 2 rows, full `metadata`. The same query for `visibility=eq.private`
+  → 0 rows. So gating editorial rows in Next.js code (the `editorialHidden()` helper one lane
+  added to `lib/shots.ts`) cannot make a public row private; it only hides it from the pages
+  we render. Keep that helper as defence in depth; do not rely on it.
+- `/admin/review` listed **every user's private complete shots** (no `is_editorial` and no
+  `user_id` scope) and `POST /api/admin/review` would publish any complete shot id — the
+  verifier published a stranger's private upload with one curl and read it anonymously
+  afterwards. Reject only set `visibility='private'`, so a rejected row came straight back.
+  These were fixed in the working tree (queue scoped to `is_editorial = true`; both writes
+  guarded to editorial rows with a 404 when nothing matched; reject clears `is_editorial`;
+  thumbnails batched; 13 tests in `tests/admin-review.test.ts`, mutation-proved).
+- The seeder now records `motion_profile` (one line, matching `runIngestVideo`), and
+  `duration_seconds` now records the span the stored shots cover with the whole runtime in
+  `source_duration_seconds`, the pipeline's own convention. Still open from the report: it
+  takes the **first N shots** of every video (a corpus of intros and title cards), stores no
+  `shot_frames`, never writes a segment breakdown, and `/videos/[id]` was still anonymously
+  reachable for a seeded video after the shot-page gate landed.
 
-1. `vercel env add FEATURE_ADMIN_REVIEW production` = `1`; redeploy.
-2. `psql "$DATABASE_URL" -c "update public.profiles set is_admin = true where email = 'reachmaioka@gmail.com';"`
-3. First seed, small and against production with the production keys:
-   `npx tsx --env-file=.env.production.local scripts/seed-music-clips.ts --max-videos=3 --target=30`
-   then open `/admin/review` and confirm the rows are there and the public surfaces still show
-   nothing (re-run the isolation checks from the appendix against production).
-4. Grow it in batches of `--target=100`, at most one batch a day so a bad batch is small.
-   Measured cost: one vision call per shot ≈ $0.05–0.10, so 300 shots ≈ $15–30 and ~8 hours of
-   pipeline time if the seeder's own analysis is serial. Storage: one 1280px JPEG per shot plus
-   thumbnails, ~0.3 MB/shot → 300 shots ≈ 100 MB.
+**The model, decided.** Editorial rows are `private` in the database until launch; RLS makes
+them unreadable to every anon and authenticated caller (their `user_id` is null, so nobody is
+the owner), and the service-role admin surface is the only reader. Curation is a separate state
+from publication, so Ken can approve for weeks without exposing anything:
+
+```
+seeded  →  review_status = 'pending',  visibility = 'private'
+approve →  review_status = 'approved', visibility = 'private'    (still invisible)
+reject  →  review_status = 'rejected', visibility = 'private'    (durable, auditable)
+LAUNCH  →  scripts/publish-editorial.ts: approved → visibility = 'public'
+           + FEATURE_PUBLIC_LIBRARY=1 for the listing, search and sitemap surfaces
+```
+
+**C.1 Migration `0031_editorial_review.sql`.** `shots.review_status text not null default
+'pending' check (review_status in ('pending','approved','rejected'))`, `reviewed_at
+timestamptz`, `reviewed_by uuid references auth.users`. Add all three to the
+`protect_shot_columns()` guard list (copy the function from 0029 wholesale, as 0029 did from
+0027). Index `(is_editorial, review_status) where is_editorial`.
+
+**C.2 Seeder.** `scripts/seed-music-clips.ts` writes `visibility: 'private'` on both the
+`videos` and `shots` inserts, `review_status: 'pending'` on shots. Replace the first-N selection
+(`detection.shots.slice(0, …)`, ~line 476) with `spreadFrames`-style sampling across the whole
+runtime (`lib/segment-breakdown.ts` exports `spreadFrames<T>(ordered, count)`; use it on
+`detection.shots`) so the corpus is not intros. Store the chosen shots' `shot_frames` (one row
+per shot pointing at the stored still, `is_representative = true`) so the shot page's frame
+strip and `representative_frame_id` are populated the way an upload's are. Leave segment
+breakdowns off for seeded rows and say so in the file header: the per-shot recreation guide
+(`/api/shots/[id]/recreation-guide`, on demand) is the editorial artefact, a whole music video
+is not a segment. Fix `provenanceLine()` in `app/videos/[id]/page.tsx` to say "video" rather
+than "upload" for a `youtube` source, then set `segment_start`/`segment_end` on seeded videos
+to the covered span (the verifier backed that out only because of the copy).
+
+**C.3 Admin surface.** `/admin/review` and `POST /api/admin/review` (both already scoped to
+editorial in the tree): queue = `is_editorial and review_status = 'pending'`; actions become
+**Approve** and **Reject**, writing `review_status`, `reviewed_at`, `reviewed_by`; a second tab
+lists approved rows with a count and the private/public state; Publish disappears from the page
+(publication is the launch script, C.5). Render inside `components/shell/app-shell.tsx` like
+every other app page. Batch thumbnails (done), placeholder for a dead thumbnail URL, drop the
+`/admin/learning` link unless `FEATURE_ADMIN_LEARNING` is on. Keep `tests/admin-review.test.ts`
+green and extend it: pending→approved→rejected transitions, `reviewed_by` set to the acting
+admin, a non-editorial id 404s on both actions.
+
+**C.4 Close the remaining reachability gap.** `app/videos/[id]/page.tsx:104` gates on
+`visibility !== 'public'` only; with the corpus private this is already closed by RLS, but add
+the same `editorialHidden` check there so a later publish-before-flag window is covered too.
+
+**C.5 Launch script.** `scripts/publish-editorial.ts` (`npm run editorial:publish -- --dry-run`
+first): sets `visibility = 'public'` on shots (and their videos) where `is_editorial and
+review_status = 'approved' and visibility = 'private'`, prints the count, refuses to run
+against production unless `--yes` is passed. Idempotent. Its pair,
+`scripts/unpublish-editorial.ts`, flips them back. Document in the file header that publishing
+makes rows readable through REST with the anon key, so this is the launch switch, not a preview.
+
+**C.6 Tests and audit.** `tests/integration.test.ts` gains: an anon REST read of a private
+editorial row returns 0 rows; a signed-in non-admin gets 0; after `publish-editorial.ts`
+(run against the local DB in the test) the anon read returns the row — the test proves both
+halves of the model. `scripts/security-audit.ts` gains the anon-REST-read-of-editorial check
+against production (must be 0 rows while unlaunched). Update `scratchpad/admin/RUNBOOK.md` into
+`docs/editorial-runbook.md` with the state machine above and the exact commands.
+
+**C.7 Production, in order, once Ken's step 6 is done:**
+
+1. `npm run db:migrate` (applies 0031), then re-run the schema parity check against local.
+2. `vercel env add FEATURE_ADMIN_REVIEW production` = `1`; redeploy.
+3. `psql "$DATABASE_URL" -c "update public.profiles set is_admin = true where email = 'reachmaioka@gmail.com';"`
+4. First seed, small: `npx tsx --env-file=.env.production.local scripts/seed-music-clips.ts
+   --max-videos=3 --target=30`. Then prove, against production: the anon REST read returns 0,
+   `/shots/<slug>` and `/videos/<id>` are 404 anonymously and for a non-admin, and the rows are
+   in `/admin/review`.
+5. Grow it in batches of `--target=100`, at most one a day. Measured: one vision call per shot
+   plus one embedding, ≈ $0.05–0.10 per shot → 300 shots ≈ $15–30, ~0.3 MB per shot of storage,
+   and several hours of wall-clock because the seeder analyses serially.
 
 ### Phase D — Verification protocol
 
@@ -338,7 +424,7 @@ Every phase ends with these, all run and their output pasted into the commit mes
    portal opens, cancel-at-period-end shows, then refund from the Stripe dashboard and confirm
    the `charge.refunded` does **not** downgrade (it is unhandled by design; the subscription
    status does). Then cancel the subscription immediately in the dashboard and confirm `free`.
-5. Phase C: the isolation table re-run against production with the seeded rows present.
+5. Phase C: with seeded rows in production — the anon REST read of editorial rows returns 0; `/shots/<slug>` and `/videos/<id>` for a seeded row are 404 anonymously and for a signed-in non-admin; the rows appear in `/admin/review`; `publish-editorial.ts --dry-run` reports the approved count and changes nothing.
 6. Rerun `scripts/prod-page-check.ts` (scratchpad) equivalent — a real signup through the
    **magic-link** path now, since password signup no longer yields a session — end to end on
    production; keep it in `scripts/` as `prod-journey.ts` with the base URL and secrets from
@@ -353,7 +439,7 @@ Every phase ends with these, all run and their output pasted into the commit mes
   regresses.
 - Sign-in email goes through a provider that can deliver at launch volume, or the README says in
   one sentence that it does not yet.
-- The editorial corpus is growing in production and invisible to everyone but an admin.
+- The editorial corpus is growing in production, `private` in the database until the launch script runs, and unreadable through REST, the shot page and the segment page to anyone but an admin — proven by the audit, not by the flag.
 - Every claim above is backed by a command that was run, with its output recorded.
 
 ## 5. Guardrails for the implementing agent

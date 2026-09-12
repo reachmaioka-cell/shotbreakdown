@@ -7,7 +7,20 @@ import {
   SUBJECT_TYPES,
 } from "@/lib/validation";
 
-export const SHOT_PROMPT_VERSION = "shot-v3";
+export const SHOT_PROMPT_VERSION = "shot-v4";
+
+/**
+ * The system prompt, split where the content stops repeating.
+ *
+ * A segment is N back-to-back shot calls, and everything in `shared` — the
+ * instructions, the enum lists, the segment's own context — is byte-identical
+ * across all of them. Only `perShot` changes: which shot this is, its
+ * timecode, how many frames came with it. Handing the two back separately lets
+ * the caller put the cache breakpoint between them, so shot 1 writes the
+ * prefix and shots 2..N read it. Fold a per-shot fact into `shared` and every
+ * call after the first pays full price again.
+ */
+export type ShotSystemPrompt = { shared: string; perShot: string };
 
 export function shotSystemPrompt(opts: {
   frameCount: number;
@@ -18,10 +31,9 @@ export function shotSystemPrompt(opts: {
   aboutFilmmaker?: string;
   failureModes?: string;
   knowledgeBlock?: string;
-  similarBlock?: string;
   /** What the uploader asked about the segment this shot belongs to. */
   focus?: string | null;
-}): string {
+}): ShotSystemPrompt {
   const frames =
     opts.frameCount > 1
       ? `You are given ${opts.frameCount} frames from the SAME shot, in chronological order. Read camera movement from what changes between them: reframing, parallax, scale change, horizon drift, motion blur.`
@@ -32,12 +44,9 @@ export function shotSystemPrompt(opts: {
       ? `This is shot ${opts.shotPosition.index + 1} of ${opts.shotPosition.total} detected in the source video${opts.timecode ? ` (${opts.timecode})` : ""}.`
       : null;
 
-  return [
+  const shared = [
     "You are a working director of photography cataloguing a shot for a professional cinematography reference library. Speak plainly. No film-school throat-clearing, no 'it depends'.",
     "Your output is a library record: another filmmaker must be able to find this shot by searching for how it looks, and understand how it was made.",
-    frames,
-    position,
-    opts.neighbours ? `Surrounding shots in this video, for context only — analyse THIS shot:\n${opts.neighbours}` : "",
 
     "ESTIMATION HONESTY. Focal length, aperture, sensor format and lens character cannot be measured from an image. Give your best committed estimate and nothing more — these are surfaced to users labelled 'Estimated'. Never phrase an optical guess as a known fact, and never invent camera or lens model names you cannot see.",
 
@@ -67,10 +76,19 @@ export function shotSystemPrompt(opts: {
 
     opts.aboutFilmmaker ? `About this filmmaker:\n${opts.aboutFilmmaker}` : "",
     opts.knowledgeBlock ? `Filmmaking knowledge base (technique references):\n${opts.knowledgeBlock}` : "",
-    opts.similarBlock ? `Highly-rated reference breakdowns. Match their specificity.\n${opts.similarBlock}` : "",
     opts.failureModes ? `Known failure modes to avoid:\n${opts.failureModes}` : "",
     opts.videoTitle ? `Source video title: ${opts.videoTitle}` : "",
   ]
     .filter(Boolean)
     .join("\n\n");
+
+  const perShot = [
+    frames,
+    position,
+    opts.neighbours ? `Surrounding shots in this video, for context only — analyse THIS shot:\n${opts.neighbours}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return { shared, perShot };
 }

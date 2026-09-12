@@ -45,8 +45,8 @@ export default async function UploadPage() {
       <main id="main" className="flex-1 w-full mx-auto max-w-2xl px-4 sm:px-6 py-12">
         <h1 className="text-[19px] font-medium text-text-0">Break down a segment</h1>
         <p className="mt-2 mb-8 text-[14px] leading-relaxed text-text-1">
-          Upload a segment — a scene, a take, one commercial — rather than a whole film. Trim it
-          to the part you care about, up to {formatDurationLimit(limits.maxVideoSeconds)}, and say
+          Upload a segment — the hook, one take, a handful of cuts — rather than a whole film. Trim
+          it to the part you care about, up to {formatDurationLimit(limits.maxVideoSeconds)}, and say
           what you want to know about it. You get one breakdown of that segment: what happens, how
           it was shot and cut, and what each department has to do to make it. You can close this
           tab; processing continues on the server.

@@ -20,7 +20,7 @@ import {
   readSegmentBreakdown,
   type StoredSegmentBreakdown,
 } from "../lib/validation";
-import { planLimits } from "../lib/plans";
+import { SEGMENT_LENGTH_TOLERANCE_SECONDS, planLimits } from "../lib/plans";
 
 const BASE = process.argv[2] ?? process.env.NEXT_PUBLIC_SITE_URL ?? "http://127.0.0.1:3002";
 /** A route names its phase, and 'Camera + post:' is the whole making, capture then post. */
@@ -137,6 +137,10 @@ async function main() {
     check("stranger session established", stranger.authed);
 
     step("2. The server enforces the segment cap, whatever the client sends");
+    // Just past the tolerance rather than wildly over: the boundary is the only
+    // part of this check that can drift when the cap or the tolerance moves.
+    const overCapSeconds =
+      free.maxVideoSeconds + SEGMENT_LENGTH_TOLERANCE_SECONDS + 0.1;
     const overCap = await owner.fetch("/api/videos", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -145,11 +149,11 @@ async function main() {
         sourceType: "video_upload",
         title: "over cap",
         segmentStart: 0,
-        segmentEnd: free.maxVideoSeconds + 30,
+        segmentEnd: overCapSeconds,
       }),
     });
     check(
-      `a ${free.maxVideoSeconds + 30}s range is rejected on a ${free.maxVideoSeconds}s plan`,
+      `a ${overCapSeconds}s range is rejected on a ${free.maxVideoSeconds}s plan`,
       overCap.status === 400,
       { status: overCap.status, body: await overCap.clone().text() }
     );

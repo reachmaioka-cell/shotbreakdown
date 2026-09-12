@@ -13,6 +13,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { createAdminClient } from "../lib/supabase/admin";
 import { UPLOAD_BUCKET } from "../lib/constants";
+import { formatDurationLimit, planLimits } from "../lib/plans";
 import { drainQueue } from "../lib/pipeline/worker";
 import { DEPARTMENTS, DEPARTMENT_LABELS, readSegmentBreakdown } from "../lib/validation";
 
@@ -94,6 +95,17 @@ class Session {
 async function main() {
   if (!VIDEO) {
     console.error("Pass a video path: npx tsx scripts/full-journey.ts clip.mp4");
+    process.exit(1);
+  }
+
+  // The run costs real model calls, so an over-cap range is caught here rather
+  // than by the upload it would fail — and it is SEGMENT_START/SEGMENT_END that
+  // would carry a stale number, since the default range is well inside the cap.
+  const capSeconds = planLimits("free").maxVideoSeconds;
+  if (!(END > START) || END - START > capSeconds) {
+    console.error(
+      `SEGMENT_START=${START} SEGMENT_END=${END} is not a legal segment: the range must be positive and at most ${formatDurationLimit(capSeconds)}.`
+    );
     process.exit(1);
   }
 

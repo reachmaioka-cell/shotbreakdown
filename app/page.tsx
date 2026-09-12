@@ -34,7 +34,7 @@ const STEPS = [
   {
     n: "01",
     title: "Upload a segment",
-    body: "Trim to the part you care about — the scene, the sequence, the ten seconds you keep rewinding.",
+    body: "Trim to the part you care about — the hook, one take, the ten seconds you keep rewinding.",
   },
   {
     n: "02",

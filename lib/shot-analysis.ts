@@ -1,11 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { MODEL } from "@/lib/constants";
+import { SHOT_MODEL } from "@/lib/constants";
 import { formatKnowledgeBlock, retrieveKnowledge } from "@/lib/knowledge";
 import { inferTagsFromText } from "@/lib/knowledge-query";
 import { fetchAnalysisImage } from "@/lib/media";
 import { formatAboutFilmmaker, type UserPreferences } from "@/lib/preferences";
-import { SHOT_PROMPT_VERSION, shotSystemPrompt } from "@/lib/prompts/shot";
+import { SHOT_PROMPT_VERSION, shotSystemPrompt, type ShotSystemPrompt } from "@/lib/prompts/shot";
 import {
   ShotRecordSchema,
   normalizeShotRecord,
@@ -69,7 +69,6 @@ export type ShotAnalysisInput = {
   neighbours?: string | null;
   preferences?: UserPreferences | null;
   insights?: string | null;
-  similarBlock?: string | null;
   /** What the uploader asked about the segment this shot belongs to. */
   focus?: string | null;
 };
@@ -94,7 +93,7 @@ export async function analyzeShotFrames(input: ShotAnalysisInput): Promise<Store
       ? `${formatTimecode(input.startSeconds)} – ${formatTimecode(input.endSeconds)}`
       : null;
 
-  const system = shotSystemPrompt({
+  const prompt = shotSystemPrompt({
     frameCount: input.images.length,
     videoTitle: input.videoTitle,
     shotPosition:
@@ -106,7 +105,6 @@ export async function analyzeShotFrames(input: ShotAnalysisInput): Promise<Store
     aboutFilmmaker: formatAboutFilmmaker(input.preferences ?? null),
     failureModes: input.insights ?? undefined,
     knowledgeBlock: formatKnowledgeBlock(knowledge),
-    similarBlock: input.similarBlock ?? undefined,
     focus: input.focus ?? null,
   });
 
@@ -115,14 +113,20 @@ export async function analyzeShotFrames(input: ShotAnalysisInput): Promise<Store
       ? `Analyse this shot from ${input.images.length} frames in order. Return the full shot record.`
       : "Analyse this shot. Return the full shot record.";
 
+  // A one-shot segment makes one call, and a cache write costs 25% more than
+  // plain input, so there is nothing to read it back. Only pay for the write
+  // when there are later shots to spend it.
+  const cacheShared = (input.shotCount ?? 1) > 1;
+
   try {
-    return await callClaude(system, input.images, userText);
+    return await callClaude(prompt, input.images, userText, cacheShared);
   } catch (first) {
     try {
       return await callClaude(
-        system,
+        prompt,
         input.images,
-        `${userText}\n\nReturn valid JSON only, matching the schema exactly. No markdown.`
+        `${userText}\n\nReturn valid JSON only, matching the schema exactly. No markdown.`,
+        cacheShared
       );
     } catch {
       const message = first instanceof Error ? first.message : "Shot analysis failed";
@@ -131,21 +135,52 @@ export async function analyzeShotFrames(input: ShotAnalysisInput): Promise<Store
   }
 }
 
-async function callClaude(
-  system: string,
+/**
+ * The request one shot call sends.
+ *
+ * A segment is N of these back to back, and the only thing that differs
+ * between them is the per-shot line and the frames. So the shared half of the
+ * system prompt carries the cache breakpoint: shot 1 writes the prefix at 125%
+ * and shots 2..N read it at 10%. The output schema is the same on every call
+ * and sits in the same prefix, which is why it is worth caching at all — the
+ * schema is the single largest fixed block in the request.
+ *
+ * Exported so the breakpoint can be asserted without spending a call.
+ */
+export function shotRequestParams(
+  prompt: ShotSystemPrompt,
   images: { buffer: Buffer; contentType: string }[],
-  userText: string
-): Promise<StoredShotRecord> {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  userText: string,
+  cacheShared: boolean
+): Anthropic.MessageCreateParamsNonStreaming {
   const blocks = images.map((i) => toImageBlock(i.buffer, i.contentType));
-
-  const message = await anthropic.messages.parse({
-    model: MODEL,
+  return {
+    model: SHOT_MODEL,
     max_tokens: 5000,
-    system,
+    system: [
+      {
+        type: "text",
+        text: prompt.shared,
+        ...(cacheShared ? { cache_control: { type: "ephemeral" as const } } : {}),
+      },
+      { type: "text", text: prompt.perShot },
+    ],
     messages: [{ role: "user", content: [...blocks, { type: "text" as const, text: userText }] }],
     output_config: { format: zodOutputFormat(ShotRecordSchema) },
-  });
+  };
+}
+
+async function callClaude(
+  prompt: ShotSystemPrompt,
+  images: { buffer: Buffer; contentType: string }[],
+  userText: string,
+  cacheShared: boolean
+): Promise<StoredShotRecord> {
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const message = await anthropic.messages.parse(
+    shotRequestParams(prompt, images, userText, cacheShared)
+  );
 
   const parsed = message.parsed_output;
   if (!parsed) throw new ShotAnalysisError("Claude returned no parsed shot record");

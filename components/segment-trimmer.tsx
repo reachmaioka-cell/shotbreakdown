@@ -71,6 +71,39 @@ export function parseTimeInput(raw: string): number | null {
 }
 
 /**
+ * Where the selection lands once one handle is moved to `seconds`: inside the
+ * file, at least a second long, and never longer than the plan's cap.
+ *
+ * The cap is enforced here rather than on the submit button, so the scrubber
+ * cannot propose a range the server is going to refuse. It is enforced by
+ * carrying the other edge along, not by stopping the handle dead: the source is
+ * minutes long and the cap is fifteen seconds, so a wall would mean the only
+ * reachable selections are the ones near where the last one already was —
+ * finding a hook a minute in would take ten alternating drags instead of two.
+ * At the cap the selection slides; below it, each edge moves on its own.
+ */
+export function clampEdge(
+  which: "in" | "out",
+  seconds: number,
+  value: SegmentRange,
+  duration: number,
+  maxSeconds: number
+): SegmentRange {
+  // A file shorter than the minimum still gets a usable selection: the whole
+  // of it, rather than a range the clamp cannot satisfy.
+  const minLength = Math.min(MIN_SELECTION_SECONDS, duration);
+  if (which === "in") {
+    const start = clamp(seconds, 0, value.end - minLength);
+    // Pulling the in point more than the cap away from the out point brings the
+    // out point back to meet it, which is what makes a selection late in a long
+    // file reachable at all.
+    return { start: round3(start), end: round3(Math.min(value.end, start + maxSeconds)) };
+  }
+  const end = clamp(seconds, value.start + minLength, duration);
+  return { start: round3(Math.max(value.start, end - maxSeconds)), end: round3(end) };
+}
+
+/**
  * Choose the part of a file to break down.
  *
  * The file never leaves the browser to get here: it is loaded straight into a
@@ -188,18 +221,16 @@ export function SegmentTrimmer({
   const setEdge = useCallback(
     (which: "in" | "out", seconds: number) => {
       if (!duration) return;
-      // A file shorter than the minimum still gets a usable selection: the whole
-      // of it, rather than a range the clamp cannot satisfy.
-      const minLength = Math.min(MIN_SELECTION_SECONDS, duration);
-      if (which === "in") {
-        const start = round3(clamp(seconds, 0, value.end - minLength));
-        if (start !== value.start) onChange({ start, end: value.end });
-      } else {
-        const end = round3(clamp(seconds, value.start + minLength, duration));
-        if (end !== value.end) onChange({ start: value.start, end });
-      }
+      const next = clampEdge(
+        which,
+        seconds,
+        { start: value.start, end: value.end },
+        duration,
+        maxSeconds
+      );
+      if (next.start !== value.start || next.end !== value.end) onChange(next);
     },
-    [duration, onChange, value.end, value.start]
+    [duration, maxSeconds, onChange, value.end, value.start]
   );
 
   function secondsFromClientX(clientX: number): number {
@@ -328,10 +359,16 @@ export function SegmentTrimmer({
     </p>
   );
 
+  /*
+   * Only the typed in and out points can land past the cap — the handles keep
+   * the selection inside it — so this belongs to the manual panel, which has no
+   * handles to move. Typed values are not silently rewritten: a number someone
+   * entered on purpose deserves an answer, not a correction they did not see.
+   */
   const capAlert = overCap ? (
     <p role="alert" className="text-[12px] text-danger">
-      That selection is {formatClock(length)}. Segments are limited to{" "}
-      {formatDurationLimit(maxSeconds)} — move a handle in.
+      That range is {formatClock(length)}. Segments are limited to{" "}
+      {formatDurationLimit(maxSeconds)} — bring the out point in.
     </p>
   ) : null;
 
@@ -518,11 +555,10 @@ export function SegmentTrimmer({
             </div>
           </div>
 
-          {capAlert}
-
           <p className="text-[12px] leading-relaxed text-text-3">
             Drag the handles, or focus one and use the arrow keys — one frame at a time, a second
-            with Shift. Press i or o to set the in or out point at the playhead.
+            with Shift. Press i or o to set the in or out point at the playhead. At{" "}
+            {formatDurationLimit(maxSeconds)} the selection slides: the far handle comes with you.
           </p>
         </>
       ) : (

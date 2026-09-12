@@ -46,7 +46,7 @@ What the billing code does today (all read in full):
 | Entitlement | `profiles.plan` (`text`), `pro_since`, `stripe_customer_id`, `is_admin` — all present in production (schema verified identical to local, 363 columns). |
 | Copy | `app/terms/page.tsx:104` says cancel-anytime, no refund of the current period. `/upgrade` hardcodes `$12`. |
 | Tests | **None.** `grep -rli stripe tests/` returns nothing. |
-| Unknowns | Whether production's Stripe keys are **live** or **test** mode (local `.env.local` holds `rk_test_…`); whether a webhook endpoint is registered in Stripe for `/api/webhooks/stripe`; whether the Customer Portal is configured; whether the live Price matches `$12`. None of these are readable from the code or from Vercel (values are redacted on pull). Section 2 gets them from Ken; section 4 verifies them by behaviour. |
+| Unknowns | Whether production's Stripe keys are **live** or **test** mode (local `.env.local` holds `rk_test_…`); whether a webhook endpoint is registered in Stripe for `/api/webhooks/stripe`; whether the Customer Portal is configured; whether the live Price matches `PRO_PRICE_USD_MONTHLY` (now `$15`). None of these are readable from the code or from Vercel (values are redacted on pull). Section 2 gets them from Ken; section 4 verifies them by behaviour. |
 
 **Email.** Magic links go out through Supabase's built-in sender because no custom SMTP is
 configured (nothing in `lib/` or `app/` sends mail; `package.json` has no mail library). That
@@ -140,8 +140,12 @@ it to push values to Vercel with `vercel env add`; nothing is pasted into the ch
    embeddings are cheap).
 4. **Stripe, live mode.** In the Stripe dashboard with the **Live** toggle on:
    - Confirm the account is activated for live payments.
-   - Products → create (or confirm) a recurring Price of **$12.00 / month** named ShotBreakdown
-     Pro. Copy its id → `STRIPE_PRICE_ID=price_…` in `.env.production.local`.
+   - Products → create (or confirm) a recurring Price of **$15.00 / month** named ShotBreakdown
+     Pro. Copy its id → `STRIPE_PRICE_ID=price_…` in `.env.production.local`. This must match
+     `PRO_PRICE_USD_MONTHLY` in `lib/plans.ts` before or with the deploy: `assertPriceMatches()`
+     reads the live Price and refuses checkout on a mismatch, so a stale $12 Price makes Pro
+     unbuyable rather than mischarging. The refusal is cached for 60s, so correcting the Price
+     self-heals within a minute without a redeploy.
    - Developers → API keys → copy the **secret** key → `STRIPE_SECRET_KEY=sk_live_…`.
    - Developers → Webhooks → Add endpoint → URL
      `https://shotbreakdown.vercel.app/api/webhooks/stripe` → events:
@@ -151,7 +155,7 @@ it to push values to Vercel with `vercel env add`; nothing is pasted into the ch
    - Settings → Billing → Customer portal → **Activate** with cancel-subscription enabled (the
      portal route fails without this).
 5. **Test-mode keys for Opus** (so the loop can be proven locally without live money): Stripe
-   with the **Test** toggle on → a secret key `sk_test_…`, a $12/month test Price, and
+   with the **Test** toggle on → a secret key `sk_test_…`, a $15/month test Price, and
    `stripe login` on this machine (`brew install stripe/stripe-cli/stripe` if absent) so
    `stripe listen` can forward webhooks. Put `STRIPE_SECRET_KEY`/`STRIPE_PRICE_ID` for test mode
    into `.env.local` (replacing the `rk_test_…` restricted key there, which cannot create

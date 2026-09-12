@@ -6,7 +6,7 @@ import { DeleteAccountButton } from "@/components/delete-account";
 import { PrefsForm } from "@/components/prefs-form";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { planLimits } from "@/lib/plans";
+import { formatDurationLimit, planLimits } from "@/lib/plans";
 import type { UserPreferences } from "@/lib/preferences";
 import { createClient } from "@/lib/supabase/server";
 import { monthlyVideoUsage } from "@/lib/videos";
@@ -68,9 +68,8 @@ export default async function SettingsPage() {
             </dd>
             <dt className="text-text-2">Limits</dt>
             <dd className="text-text-2">
-              Up to {Math.round(limits.maxVideoSeconds / 60)} min per video ·{" "}
-              {limits.maxShotsPerVideo} shots per video ·{" "}
-              {limits.exports ? "exports included" : "exports on Pro"}
+              Segments up to {formatDurationLimit(limits.maxVideoSeconds)} · every shot in the
+              segment analyzed · {limits.exports ? "exports included" : "exports on Pro"}
             </dd>
           </dl>
         </section>

@@ -33,6 +33,7 @@
     "db:recreation-guide": "npx tsx --env-file=.env.local scripts/generate-recreation-guide.ts",
     "segment:journey": "npx tsx --env-file=.env.local scripts/segment-journey.ts",
     "full:journey": "npx tsx --env-file=.env.local scripts/full-journey.ts",
+  "model:compare": "npx tsx --env-file=.env.local scripts/model-compare.ts",
     "security:audit": "npx tsx --env-file=.env.local scripts/security-audit.ts",
     "billing:journey": "npx tsx --env-file=.env.local scripts/billing-journey.ts",
     "editorial:publish": "npx tsx --env-file=.env.local scripts/publish-editorial.ts",

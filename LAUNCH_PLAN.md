@@ -172,13 +172,18 @@ extend its column list). `focus` is client-writable by the owner. Run `npm run d
 #### 2.2 Plan limits (`lib/plans.ts`)
 
 ```ts
-free: { videosPerMonth: 3,  maxVideoSeconds: 60,  maxShotsPerVideo: 12, maxUploadBytes: 300 MB, ... }
-pro:  { videosPerMonth: 100, maxVideoSeconds: 180, maxShotsPerVideo: 30, maxUploadBytes: 2 GB,  ... }
+free: { videosPerMonth: 3,  maxVideoSeconds: 15, maxShotsPerVideo: 20, maxUploadBytes: 300 MB, ... }
+pro:  { videosPerMonth: 72, maxVideoSeconds: 15, maxShotsPerVideo: 20, maxUploadBytes: 2 GB,  ... }
 ```
 
-Rename nothing; change the numbers. `formatDurationLimit` should render seconds under two minutes
-as "60 seconds", not "1 minute". No current test pins the old values; the upload form and the
-`too_long` pipeline error copy do, so update both.
+Rename nothing; change the numbers. Both plans cap a segment at fifteen seconds: a segment costs
+what its shots cost, shots are cuts plus one, and length is the only lever that bounds one
+analysis — so length, not shot count, is the plan boundary, and `maxShotsPerVideo` is a backstop
+sitting one above the nineteen shots the longest legal segment can produce. Pro is
+`PRO_PRICE_USD_MONTHLY = 15`. `formatDurationLimit` renders anything under two minutes in seconds
+("15 seconds", not "0 minutes") and is the only thing that should ever print a cap to a person.
+`tests/plan-limits.test.ts` pins these values; the upload form and the `too_long` pipeline error
+copy render them.
 
 #### 2.3 Upload: trimmer and focus (`components/upload-form.tsx`, `app/api/videos/route.ts`)
 
@@ -186,14 +191,17 @@ as "60 seconds", not "1 minute". No current test pins the old values; the upload
   On `loadedmetadata`, read `duration`. If the browser cannot decode the file (ProRes MOV, MKV),
   `error` fires: fall back to two timecode inputs (In, Out) with the same validation.
 - **Trimmer** (`components/segment-trimmer.tsx`): the preview video, a two-handle range over the
-  duration, In/Out timecodes, selected length vs the plan cap ("0:42 of 1:00 allowed"), play-selection
+  duration, In/Out timecodes, selected length vs the plan cap ("0:09 of 0:15 allowed"), play-selection
   button that plays In to Out and stops. Keyboard: `I` and `O` set In/Out at the playhead;
   arrows nudge the active handle by one frame (use `1/fps` if known else 1/30 s).
   - If `duration <= maxVideoSeconds`: trimmer collapsed under a "Trim" toggle; default is the
     whole file.
-  - If `duration > maxVideoSeconds`: trimmer open and required; Out defaults to In + cap; the
-    submit button is disabled until `out - in <= cap`. Copy: "Segments are limited to 60 seconds
-    on the free plan. Pick the part you want broken down."
+  - If `duration > maxVideoSeconds`: trimmer open and required; Out defaults to In + cap, and
+    the handles themselves cannot propose an over-cap range: at the cap the selection slides, the
+    far handle coming with the dragged one, so a hook late in a long source is still two drags
+    away. The typed In/Out panel (shown when the browser cannot decode the file) is not rewritten
+    under the user, so it keeps an alert and a disabled submit: "Segments are limited to 15
+    seconds on your plan. Bring the out point in."
 - **Focus** (`components/focus-field.tsx`): one textarea, optional, `maxLength 500`, label "What
   do you want to know about this segment? (optional)", three rotating placeholders: "How was the
   kitchen lit and how would I match it?", "Break down the whip-pan into the close-up at 0:04.",

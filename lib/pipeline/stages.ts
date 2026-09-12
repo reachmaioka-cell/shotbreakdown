@@ -52,6 +52,18 @@ const TIME_BUDGET_MS = 170_000;
 const ANALYSIS_TIME_BUDGET_MS = 150_000;
 const FRAME_WIDTH = 1280;
 const THUMB_WIDTH = 640;
+/**
+ * Width of the copy a model reads, which is not the width we store.
+ *
+ * A stored frame is also the shot's poster: the shot page renders it at up to
+ * 70vh, the share card uses it, and picking a different frame promotes that
+ * frame to poster, so every stored frame has to stay display quality. The
+ * model does not need that detail — measured with Anthropic's token counter, a
+ * 1280px frame costs 1,200 input tokens and a 768px one 452, and three of them
+ * ride on every per-shot call. So the frame keeps its resolution in storage and
+ * only the copy that goes into the request is scaled down.
+ */
+const MODEL_FRAME_WIDTH = 768;
 const CANDIDATES_PER_SHOT = 5;
 /** Frames sent to the model per shot: first, representative, last. */
 const ANALYSIS_FRAMES = 3;
@@ -113,6 +125,52 @@ async function makeThumbnail(sourcePath: string, outPath: string): Promise<void>
     "-y",
     outPath,
   ]);
+}
+
+/**
+ * Scale a frame down to what the model reads.
+ *
+ * A frame that will not scale is still a frame worth sending: paying full
+ * price for one is better than failing the shot over an image ffmpeg did not
+ * like, so a failure here degrades to the stored frame.
+ *
+ * Exported because it is the seam between what we store and what we pay for,
+ * and a test can hold a real frame either side of it.
+ */
+export async function downscaleForModel(image: {
+  buffer: Buffer;
+  contentType: string;
+}): Promise<{ buffer: Buffer; contentType: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "sb-model-frame-"));
+  try {
+    const input = join(dir, "in.jpg");
+    const output = join(dir, "out.jpg");
+    await writeFile(input, image.buffer);
+    await runFfmpeg([
+      "-hide_banner",
+      "-nostats",
+      "-i",
+      input,
+      "-vf",
+      `scale='min(${MODEL_FRAME_WIDTH},iw)':-2`,
+      "-q:v",
+      "3",
+      "-y",
+      output,
+    ]);
+    const { readFile } = await import("node:fs/promises");
+    return { buffer: await readFile(output), contentType: "image/jpeg" };
+  } catch (e) {
+    console.error("downscaleForModel", e instanceof Error ? e.message : e);
+    return image;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Fetch a stored frame and hand back the copy a model call should carry. */
+async function fetchModelFrame(url: string): Promise<{ buffer: Buffer; contentType: string }> {
+  return downscaleForModel(await fetchAnalysisImage(url));
 }
 
 async function uploadJpeg(admin: Admin, path: string, body: Buffer): Promise<void> {
@@ -714,10 +772,18 @@ export async function runAnalyzeShots(job: ProcessingJob): Promise<Record<string
     return { analyzed: 0, remaining: 0 };
   }
 
-  // Retrieve published shots close to this video once per batch and hand them
-  // to the analyser as few-shot examples. This is what makes the library
-  // improve the analysis rather than only storing its output.
-  const similarBlock = await buildSimilarBlock(admin, video.title as string | null);
+  /*
+   * No few-shot examples on the per-shot call.
+   *
+   * Two published shot records used to be retrieved per batch and injected
+   * into every shot call as "match their specificity" examples — about 1,500
+   * input tokens on each of a segment's N calls. It was a cost decision to
+   * stop, not an oversight: the per-shot call is the one that runs 5-10 times
+   * per segment, and the records are already written against a fixed schema
+   * with the enum values spelled out in the prompt, so the examples were
+   * paying to restate what the schema says. If it comes back, it belongs on
+   * the once-per-segment breakdown call, not here.
+   */
 
   const startedAt = Date.now();
   let analyzed = 0;
@@ -740,7 +806,6 @@ export async function runAnalyzeShots(job: ProcessingJob): Promise<Record<string
         shotCount: (video.shot_count as number) || queue.length,
         preferences: preferences ?? null,
         insights: (insight?.summary as string | null) ?? null,
-        similarBlock,
         focus: (video.focus as string | null) ?? null,
       });
       analyzed += 1;
@@ -829,7 +894,6 @@ export async function analyzeOneShot(
     shotCount: number;
     preferences: Record<string, unknown> | null;
     insights: string | null;
-    similarBlock?: string | null;
     focus?: string | null;
   }
 ): Promise<StoredShotRecord> {
@@ -855,10 +919,7 @@ export async function analyzeOneShot(
   }
 
   const images = await Promise.all(
-    chosen.map(async (f) => {
-      const url = await signedUrl(admin, f.storage_path as string);
-      return fetchAnalysisImage(url);
-    })
+    chosen.map(async (f) => fetchModelFrame(await signedUrl(admin, f.storage_path as string)))
   );
 
   const record = await analyzeShotFrames({
@@ -870,7 +931,6 @@ export async function analyzeOneShot(
     endSeconds: args.endSeconds,
     preferences: args.preferences as never,
     insights: args.insights,
-    similarBlock: args.similarBlock ?? null,
     focus: args.focus ?? null,
   });
 
@@ -901,31 +961,6 @@ export async function analyzeOneShot(
 
   if (error) throw new PipelineError(`Could not save shot: ${error.message}`, "db_write_failed");
   return record;
-}
-
-/**
- * Two published shots whose records are closest to this video, formatted as
- * examples. Best-effort: retrieval failure degrades the prompt, never the job.
- */
-async function buildSimilarBlock(admin: Admin, videoTitle: string | null): Promise<string | null> {
-  if (!videoTitle) return null;
-  try {
-    const vector = await embed(`${videoTitle} cinematography shot composition lighting colour`);
-    const { data } = await admin.rpc("match_shots", {
-      query_embedding: vector,
-      match_k: 2,
-      p_user_id: null,
-    });
-    const rows = (data ?? []) as { metadata: Record<string, unknown> | null }[];
-    const examples = rows
-      .map((row) => row.metadata)
-      .filter((m): m is Record<string, unknown> => !!m)
-      .map((m, i) => `Example ${i + 1}:\n${JSON.stringify(m).slice(0, 3000)}`);
-    return examples.length > 0 ? examples.join("\n\n") : null;
-  } catch (e) {
-    console.error("buildSimilarBlock", e instanceof Error ? e.message : e);
-    return null;
-  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1140,16 +1175,13 @@ export async function runGenerateRecreationGuide(job: ProcessingJob): Promise<Re
   let images: { buffer: Buffer; contentType: string }[] = [];
   if (chosen.length > 0) {
     images = await Promise.all(
-      chosen.map(async (f) => {
-        const url = await signedUrl(admin, f.storage_path as string);
-        return fetchAnalysisImage(url);
-      })
+      chosen.map(async (f) => fetchModelFrame(await signedUrl(admin, f.storage_path as string)))
     );
   } else {
     const fallback = (shot.poster_path as string | null) ?? (shot.thumbnail_path as string | null);
     if (!fallback) throw new PipelineError("This shot has no frames to analyze", "no_frames", false);
     const url = fallback.startsWith("http") ? fallback : await signedUrl(admin, fallback);
-    images = [await fetchAnalysisImage(url)];
+    images = [await fetchModelFrame(url)];
   }
 
   const { data: video } = await admin
@@ -1266,7 +1298,7 @@ async function loadSegmentFrames(
       const images: SegmentFrame[] = [];
       for (const c of chosen) {
         try {
-          const img = await fetchAnalysisImage(await signedUrl(admin, c.path));
+          const img = await fetchModelFrame(await signedUrl(admin, c.path));
           images.push({ ...img, timestampSeconds: c.t });
         } catch (e) {
           // A missing frame degrades the prompt; it must not fail the segment.
@@ -1535,4 +1567,10 @@ export async function runGenerateAiRecreation(
   return { videoId, shots: inputs.length, framed: inputs.filter((s) => s.image).length };
 }
 
-export const PIPELINE_LIMITS = { SHOT_DETECTION, FRAME_WIDTH, THUMB_WIDTH, CANDIDATES_PER_SHOT };
+export const PIPELINE_LIMITS = {
+  SHOT_DETECTION,
+  FRAME_WIDTH,
+  MODEL_FRAME_WIDTH,
+  THUMB_WIDTH,
+  CANDIDATES_PER_SHOT,
+};

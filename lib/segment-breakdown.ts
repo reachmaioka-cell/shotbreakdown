@@ -19,13 +19,20 @@ export { SEGMENT_PROMPT_VERSION };
 /**
  * Frames sent to the model.
  *
- * Each 1280px frame is roughly 1.2k tokens, so twelve frames plus the facet
- * records and the prompt lands around 25k input tokens. Beyond that the cost
- * climbs faster than the answer improves: the facet records already carry what
- * each shot looks like, and the frames are there so the model can read the
- * things a record cannot hold — continuity, eyelines, how two shots cut.
+ * The pipeline scales each frame to 768px before it goes in the request, about
+ * 450 tokens, so eight of them plus the facet records and the prompt lands
+ * around 12k input tokens. Eight rather than twelve because a segment is
+ * capped at fifteen seconds: that is five to ten shots, and the twelfth frame
+ * of a segment that short is a third sample of a shot whose facet record
+ * already says what it looks like. The frames are here for what a record
+ * cannot hold — continuity, eyelines, how two shots cut.
+ *
+ * What the budget still has to protect is the other end: planFrameBudget hands
+ * a one- or two-shot segment every candidate frame it has, because comparing
+ * frames inside a shot is the only way a held, ramped or reversed move can be
+ * read at all.
  */
-export const MAX_BREAKDOWN_FRAMES = 12;
+export const MAX_BREAKDOWN_FRAMES = 8;
 
 export class SegmentBreakdownError extends Error {
   readonly retryable: boolean;
@@ -371,6 +378,14 @@ export async function generateSegmentBreakdown(input: {
   }
 }
 
+/*
+ * No cache_control on this call, deliberately.
+ *
+ * A segment gets exactly one breakdown, so a cached prefix would be written at
+ * 125% and never read: caching here is a pure loss. The per-shot call is the
+ * opposite shape — N calls with the same prefix — and that is where the
+ * breakpoint lives (lib/shot-analysis.ts).
+ */
 async function callClaude(
   system: string,
   content: Anthropic.ContentBlockParam[],

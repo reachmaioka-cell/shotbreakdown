@@ -153,8 +153,11 @@ export async function POST(request: Request) {
       // left to the browser that proposed the range. The tolerance absorbs the
       // disagreement between a container's timestamps and a browser's estimate.
       if (end - start > limits.maxVideoSeconds + SEGMENT_LENGTH_TOLERANCE_SECONDS) {
+        // Said to a tenth: against a cap this short, "16 seconds" for 15.6 is
+        // the kind of rounding that reads as the server being wrong.
+        const length = Math.round((end - start) * 10) / 10;
         return jsonError(
-          `That segment is ${Math.round(end - start)} seconds. Segments are limited to ${formatDurationLimit(limits.maxVideoSeconds)} on your plan.`,
+          `That segment is ${length} seconds. Segments are limited to ${formatDurationLimit(limits.maxVideoSeconds)} on your plan.`,
           400
         );
       }

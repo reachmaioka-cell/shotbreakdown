@@ -3,16 +3,17 @@ import Link from "next/link";
 import { ManageBillingButton, UpgradeButton } from "@/components/billing-buttons";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
-import { PLANS, PRO_PRICE_USD_MONTHLY, formatBytes } from "@/lib/plans";
+import { PLANS, PRO_PRICE_USD_MONTHLY, formatBytes, formatDurationLimit } from "@/lib/plans";
 import { checkoutConfigured } from "@/lib/stripe";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
+// Built from the plans rather than written out, because a description that
+// quotes a price or an allowance is the surface that goes stale first.
 export const metadata: Metadata = {
   title: "Pricing",
-  description:
-    "ShotBreakdown pricing. Start free with three video analyses a month; Pro adds longer videos, more shots, exports and priority processing.",
+  description: `ShotBreakdown pricing. Start free with ${PLANS.free.videosPerMonth} segment analyses a month, up to ${formatDurationLimit(PLANS.free.maxVideoSeconds)} each; Pro is $${PRO_PRICE_USD_MONTHLY} a month for ${PLANS.pro.videosPerMonth}, with exports and priority processing.`,
 };
 
 function Feature({ children, included = true }: { children: React.ReactNode; included?: boolean }) {
@@ -57,7 +58,8 @@ export default async function UpgradePage() {
       <main id="main" className="mx-auto w-full max-w-3xl flex-1 px-4 sm:px-6 py-12">
         <h1 className="text-[24px] font-medium text-text-0">Pricing</h1>
         <p className="mt-2 mb-10 text-[14px] text-text-1">
-          Start free. Upgrade when a project needs longer videos or exports.
+          Start free. Upgrade when a project needs more breakdowns a month, exports or priority
+          processing.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -67,9 +69,9 @@ export default async function UpgradePage() {
               $0<span className="text-[13px] font-normal text-text-2"> / month</span>
             </p>
             <ul className="mt-5 flex flex-col gap-2">
-              <Feature>{free.videosPerMonth} video analyses per month</Feature>
-              <Feature>Up to {Math.round(free.maxVideoSeconds / 60)} minutes per video</Feature>
-              <Feature>Up to {free.maxShotsPerVideo} shots analyzed per video</Feature>
+              <Feature>{free.videosPerMonth} segment analyses per month</Feature>
+              <Feature>Segments up to {formatDurationLimit(free.maxVideoSeconds)}</Feature>
+              <Feature>Every shot in the segment analyzed</Feature>
               <Feature>Uploads to {formatBytes(free.maxUploadBytes)}</Feature>
               <Feature>Semantic search and Find Similar</Feature>
               <Feature>{free.maxSavedShots} saved shots · {free.maxCollections} collections</Feature>
@@ -98,9 +100,9 @@ export default async function UpgradePage() {
               <span className="text-[13px] font-normal text-text-2"> / month</span>
             </p>
             <ul className="mt-5 flex flex-col gap-2">
-              <Feature>{pro.videosPerMonth} video analyses per month</Feature>
-              <Feature>Up to {Math.round(pro.maxVideoSeconds / 60)} minutes per video</Feature>
-              <Feature>Up to {pro.maxShotsPerVideo} shots analyzed per video</Feature>
+              <Feature>{pro.videosPerMonth} segment analyses per month</Feature>
+              <Feature>Segments up to {formatDurationLimit(pro.maxVideoSeconds)}</Feature>
+              <Feature>Every shot in the segment analyzed</Feature>
               <Feature>Uploads to {formatBytes(pro.maxUploadBytes)}</Feature>
               <Feature>Semantic search and Find Similar</Feature>
               <Feature>Unlimited saved shots and collections</Feature>
@@ -138,7 +140,14 @@ export default async function UpgradePage() {
           </section>
         </div>
 
-        <p className="mt-8 text-[12px] leading-relaxed text-text-3">
+        <p className="mt-8 text-[13px] leading-relaxed text-text-1">
+          Both plans analyze a segment of up to {formatDurationLimit(pro.maxVideoSeconds)}. That is
+          the unit: a breakdown names every shot inside it — what happens, how it was shot and cut,
+          and what each department has to do — which is an answer about one take or one hook, not
+          about a whole film.
+        </p>
+
+        <p className="mt-4 text-[12px] leading-relaxed text-text-3">
           Limits are enforced on the server. Cancel any time from Settings; cancelling stops future
           charges and keeps everything you have already analyzed. By subscribing you agree to the{" "}
           <Link href="/terms" className="text-text-2 hover:text-text-0">

@@ -284,6 +284,20 @@ export async function generateSegmentBreakdown(input: {
   fps?: number | null;
   preferences?: UserPreferences | null;
   insights?: string | null;
+  /**
+   * Which model writes it. Defaults to MODEL, so production is unchanged; a
+   * comparison passes a candidate here rather than standing up a second
+   * generator that would answer a different prompt than the product does.
+   */
+  model?: string;
+  /**
+   * Called with the usage of every call this makes, the retry included.
+   *
+   * Without it the only way to price a breakdown is to rebuild its request
+   * outside this function and count that instead, which is how a measurement
+   * stops measuring the thing it names. Ignored by production.
+   */
+  onUsage?: (usage: Anthropic.Usage, model: string) => void;
 }): Promise<SegmentBreakdown> {
   if (input.shots.length === 0) {
     throw new SegmentBreakdownError("This segment has no analysed shots", false);
@@ -359,8 +373,10 @@ export async function generateSegmentBreakdown(input: {
       : "The uploader asked nothing specific. Write the segment breakdown, leaving focus_answer empty.",
   });
 
+  const model = input.model ?? MODEL;
+
   try {
-    return await callClaude(system, content, input.shots);
+    return await callClaude(system, content, input.shots, model, input.onUsage);
   } catch (first) {
     const retryContent: Anthropic.ContentBlockParam[] = [
       ...content,
@@ -370,7 +386,7 @@ export async function generateSegmentBreakdown(input: {
       },
     ];
     try {
-      return await callClaude(system, retryContent, input.shots);
+      return await callClaude(system, retryContent, input.shots, model, input.onUsage);
     } catch {
       const message = first instanceof Error ? first.message : "Segment breakdown failed";
       throw new SegmentBreakdownError(message, !/api key|invalid_request/i.test(message));
@@ -389,19 +405,38 @@ export async function generateSegmentBreakdown(input: {
 async function callClaude(
   system: string,
   content: Anthropic.ContentBlockParam[],
-  shots: SegmentShotInput[]
+  shots: SegmentShotInput[],
+  model: string = MODEL,
+  onUsage?: (usage: Anthropic.Usage, model: string) => void
 ): Promise<SegmentBreakdown> {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  const message = await anthropic.messages.parse({
-    model: MODEL,
+  /*
+   * create() rather than parse(), so the tokens are counted even when the
+   * document does not arrive. parse() validates before it returns, so a model
+   * that overran max_tokens and truncated its JSON throws with the usage still
+   * inside the response we never got to read — and the call that failed is
+   * exactly the one worth costing, because choosing a model is a money
+   * decision here. A truncated reply is billed in full either way.
+   */
+  const message = await anthropic.messages.create({
+    model,
     max_tokens: 8000,
     system,
     messages: [{ role: "user", content }],
     output_config: { format: zodOutputFormat(SegmentBreakdownSchema) },
   });
+  onUsage?.(message.usage, model);
 
-  const parsed = message.parsed_output;
+  const raw = message.content.find((block) => block.type === "text");
+  let parsed: unknown = null;
+  if (raw && raw.type === "text") {
+    try {
+      parsed = JSON.parse(raw.text);
+    } catch {
+      parsed = null;
+    }
+  }
   if (!parsed) throw new SegmentBreakdownError("Claude returned no parsed segment breakdown");
 
   return normalizeSegmentBreakdown(

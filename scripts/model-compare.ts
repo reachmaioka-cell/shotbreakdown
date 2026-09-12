@@ -13,6 +13,14 @@
  * the API default temperature, exactly as production does, so the baseline
  * disagrees with itself too, and only the gap between the two rates is evidence.
  *
+ * --width=N asks the other question with the same instrument: what the
+ * downscale costs. It changes the width the CANDIDATE's frames are scaled to
+ * and nothing else — same prompt, same schema, same request builder, same cache
+ * behaviour, same ffmpeg re-encode on both sides — so running the same model on
+ * both sides with --width=1280 pairs a 768px read against a 1280px read of the
+ * same shot. Both sides default to MODEL_FRAME_WIDTH, which is what production
+ * sends, so omitting the flag leaves the run exactly as it was.
+ *
  * Every run spends real money: two calls per shot, plus one per control shot.
  *
  * --dry prints the sample and the frames it can read without calling anything,
@@ -20,6 +28,7 @@
  *
  *   npx tsx --env-file=.env.local scripts/model-compare.ts [--limit=8]
  *     [--shots=id,id] [--baseline=model] [--candidate=model] [--control=4]
+ *     [--width=1280] [--baseline-width=768] [--control-width=1280]
  *     [--dry] [--prose] [--out=path.json]
  */
 import Anthropic from "@anthropic-ai/sdk";
@@ -27,7 +36,7 @@ import { SHOT_MODEL } from "../lib/constants";
 import { formatKnowledgeBlock, retrieveKnowledge } from "../lib/knowledge";
 import { inferTagsFromText } from "../lib/knowledge-query";
 import { fetchAnalysisImage, resolveMediaUrl } from "../lib/media";
-import { downscaleForModel } from "../lib/pipeline/stages";
+import { MODEL_FRAME_WIDTH, downscaleForModel } from "../lib/pipeline/stages";
 import { shotSystemPrompt, type ShotSystemPrompt } from "../lib/prompts/shot";
 import { formatTimecode, shotRequestParams } from "../lib/shot-analysis";
 import {
@@ -59,6 +68,27 @@ const shotIds = (flag("shots") ?? "").split(",").map((s) => s.trim()).filter(Boo
 const baselineModel = flag("baseline") ?? SHOT_MODEL;
 const candidateModel = flag("candidate") ?? "claude-haiku-4-5";
 const controlCount = Number(flag("control") ?? 0);
+/**
+ * Frame width per side. Production's width is the default on both, so a run
+ * that does not ask about the downscale is priced and scored on the frames
+ * production actually sends.
+ */
+const baselineWidth = Number(flag("baseline-width") ?? MODEL_FRAME_WIDTH);
+const candidateWidth = Number(flag("width") ?? baselineWidth);
+/**
+ * Which width the noise floor is measured at. Defaults to the baseline's, so
+ * a run that is not asking about the downscale is unchanged.
+ *
+ * A width comparison needs this. The control answers "how often does this
+ * model disagree with itself on this material", and that is a property of a
+ * width as much as of a model: a 768 control tells you the 768 read is jittery
+ * but says nothing about whether the 1280 read is steadier. Without both
+ * floors the run can only show that the record MOVED when the width changed,
+ * never whether the wider frame bought a more determinate answer — which is
+ * the question the width is being asked. `--control-width=1280` measures the
+ * other floor, at the cost of two extra calls per control shot.
+ */
+const controlWidth = Number(flag("control-width") ?? baselineWidth);
 const showProse = args.includes("--prose");
 const dryRun = args.includes("--dry");
 const outPath = flag("out");
@@ -103,6 +133,25 @@ function cost(model: string, u: Usage): number | null {
       u.output * price.output) /
     1_000_000
   );
+}
+
+/**
+ * The same call priced as if no prompt cache existed.
+ *
+ * The two sides of a run do not get the same cache deal. The baseline is
+ * called twice per prefix whenever --control is on, so its second call reads
+ * back what the first wrote; the candidate is called once and pays the write
+ * with nothing to read it. The measured $/call then differs for a reason that
+ * has nothing to do with either model, and a verdict drawn off it is a verdict
+ * about the run's call order. This prices every prompt token once at the plain
+ * input rate, which is the same deal on both sides, so the two numbers can be
+ * compared to each other. Neither number is what production pays — production
+ * is somewhere between this and the cached price — so print both.
+ */
+function uncachedCost(model: string, u: Usage): number | null {
+  const price = PRICES[model];
+  if (!price) return null;
+  return ((u.input + u.cacheWrite + u.cacheRead) * price.input + u.output * price.output) / 1_000_000;
 }
 
 /* ------------------------------------------------------------------ *
@@ -196,16 +245,29 @@ async function loadShots(): Promise<Shot[]> {
 
 type Frame = { buffer: Buffer; contentType: string };
 
-async function loadFrames(shot: Shot): Promise<Frame[]> {
+/** The stored frames, full size, read once and scaled per side afterwards. */
+async function loadSourceFrames(shot: Shot): Promise<Frame[]> {
   const frames: Frame[] = [];
   for (const path of shot.paths) {
     const url = await resolveMediaUrl(path);
     if (!url) continue;
-    // The pipeline hands the model a downscaled copy, never the stored frame.
-    // Send the stored frame here and the run prices a request nobody makes.
-    frames.push(await downscaleForModel(await fetchAnalysisImage(url)));
+    frames.push(await fetchAnalysisImage(url));
   }
   return frames;
+}
+
+/**
+ * The copy one side of the comparison sends.
+ *
+ * The pipeline hands the model a downscaled copy, never the stored frame. Send
+ * the stored frame here and the run prices a request nobody makes — so even a
+ * side asking for the stored width goes through the same ffmpeg scale and the
+ * same re-encode, and the width is the only thing that differs between sides.
+ */
+async function framesAt(source: Frame[], width: number): Promise<Frame[]> {
+  const out: Frame[] = [];
+  for (const image of source) out.push(await downscaleForModel(image, width));
+  return out;
 }
 
 /**
@@ -464,6 +526,12 @@ function report(pairing: Pairing, control: Pairing | null) {
     { kind: ["prose"], heading: "PROSE — mean word overlap, low numbers are not failures" },
   ];
 
+  if (control) {
+    // The control column is only readable if the reader knows what was held
+    // fixed in it — with --control-width the floor is not the baseline's.
+    console.log(`\ncontrol column: ${control.baseline} read twice, ${control.pairs.length} shots, same run`);
+  }
+
   for (const group of groups) {
     console.log(`\n${group.heading}`);
     console.log(
@@ -535,9 +603,18 @@ async function main() {
   const shots = await loadShots();
   if (shots.length === 0) throw new Error("no shots with readable frames in this database");
 
-  console.log(`baseline  ${baselineModel}`);
-  console.log(`candidate ${candidateModel}`);
-  console.log(`\nSAMPLE (${shots.length} shots, ${shots.length * 2 + Math.min(controlCount, shots.length)} model calls)`);
+  console.log(`baseline  ${baselineModel}  frames ${baselineWidth}px`);
+  console.log(`candidate ${candidateModel}  frames ${candidateWidth}px`);
+  if (baselineWidth !== candidateWidth && baselineModel !== candidateModel) {
+    // Two variables moved at once, so nothing the run prints can say which one
+    // moved the number. Refuse rather than publish an uninterpretable table.
+    throw new Error(
+      "model and frame width both differ between the sides — change one at a time"
+    );
+  }
+  const controlShots = Math.min(controlCount, shots.length);
+  const controlCalls = controlShots * (controlWidth === baselineWidth ? 1 : 2);
+  console.log(`\nSAMPLE (${shots.length} shots, ${shots.length * 2 + controlCalls} model calls)`);
   for (const shot of shots) {
     console.log(
       `  ${shot.id.slice(0, 8)}  ${shot.paths.length} ${shot.source === "poster" ? "poster" : "frame"}(s)` +
@@ -562,8 +639,14 @@ async function main() {
 
   if (dryRun) {
     for (const shot of shots) {
-      const frames = await loadFrames(shot);
-      console.log(`  ${shot.id.slice(0, 8)}  ${frames.length} readable frame(s)`);
+      const source = await loadSourceFrames(shot);
+      const a = await framesAt(source, baselineWidth);
+      const b = await framesAt(source, candidateWidth);
+      const kb = (f: Frame[]) => Math.round(f.reduce((n, i) => n + i.buffer.byteLength, 0) / 1024);
+      console.log(
+        `  ${shot.id.slice(0, 8)}  ${source.length} readable frame(s)` +
+          `  ${baselineWidth}px ${kb(a)}kB  ${candidateWidth}px ${kb(b)}kB`
+      );
     }
     return;
   }
@@ -571,12 +654,17 @@ async function main() {
   const unusable: { shot: Shot; reason: string }[] = [];
 
   for (const [index, shot] of shots.entries()) {
-    const frames = await loadFrames(shot);
-    if (frames.length === 0) {
+    const source = await loadSourceFrames(shot);
+    if (source.length === 0) {
       unusable.push({ shot, reason: "frames unreadable" });
       continue;
     }
-    const system = await buildSystemPrompt(shot, frames.length);
+    // Same frames, same order, scaled once per side. When the widths match —
+    // every run that is not asking about the downscale — both sides get an
+    // identical request but for the model name.
+    const baselineFrames = await framesAt(source, baselineWidth);
+    const candidateFrames = await framesAt(source, candidateWidth);
+    const system = await buildSystemPrompt(shot, source.length);
     // analyzeShotFrames only pays for the cache write when later shots in the
     // same video will read it back, so mirror that or the per-call price is a
     // fiction on one-shot videos.
@@ -587,13 +675,26 @@ async function main() {
     // candidate quietly shrinks the noise floor it is being judged against.
     let baseline: StoredShotRecord | null = null;
     try {
-      baseline = await analyze(baselineModel, system, frames, cacheShared);
+      baseline = await analyze(baselineModel, system, baselineFrames, cacheShared);
       if (index < controlCount) {
-        controlPairs.push({
-          shot,
-          a: baseline,
-          b: await analyze(baselineModel, system, frames, cacheShared),
-        });
+        if (controlWidth === baselineWidth) {
+          controlPairs.push({
+            shot,
+            a: baseline,
+            b: await analyze(baselineModel, system, baselineFrames, cacheShared),
+          });
+        } else {
+          // A floor at a width the baseline is not read at has to be two fresh
+          // draws of its own. Pairing one of them against the baseline record
+          // would be a cross-width diff wearing the control's label — the
+          // exact confusion the column exists to resolve.
+          const controlFrames = await framesAt(source, controlWidth);
+          controlPairs.push({
+            shot,
+            a: await analyze(baselineModel, system, controlFrames, cacheShared),
+            b: await analyze(baselineModel, system, controlFrames, cacheShared),
+          });
+        }
       }
     } catch (error) {
       unusable.push({ shot, reason: `${baselineModel}: ${schemaDetail(error)}` });
@@ -601,7 +702,11 @@ async function main() {
 
     if (baseline) {
       try {
-        pairs.push({ shot, a: baseline, b: await analyze(candidateModel, system, frames, cacheShared) });
+        pairs.push({
+          shot,
+          a: baseline,
+          b: await analyze(candidateModel, system, candidateFrames, cacheShared),
+        });
       } catch (error) {
         // The candidate could not produce a valid record for this shot even on
         // the retry. That is a result, not a crash — the run continues.
@@ -623,7 +728,9 @@ async function main() {
   console.log("\nTOKENS AND COST");
   for (const [model, u] of usage) {
     const total = cost(model, u);
+    const bare = uncachedCost(model, u);
     const r = retries.get(model);
+    const prompt = u.input + u.cacheWrite + u.cacheRead;
     console.log(
       `  ${model.padEnd(20)} ${u.calls} calls  in ${u.input.toLocaleString()}` +
         `  cache w/r ${u.cacheWrite.toLocaleString()}/${u.cacheRead.toLocaleString()}` +
@@ -631,16 +738,37 @@ async function main() {
         (total == null ? "  cost n/a" : `  $${total.toFixed(4)}  ($${(total / u.calls).toFixed(4)}/call)`) +
         `  schema retries ${r?.retried ?? 0} (${r?.failed ?? 0} unrecoverable)`
     );
+    // Per-call prompt and output volume are the only two things a model
+    // controls. The cache split is the run's doing, so it gets its own line
+    // and a price that ignores it.
+    console.log(
+      `  ${"".padEnd(20)} per call: prompt ${Math.round(prompt / u.calls).toLocaleString()} tok` +
+        `  out ${Math.round(u.output / u.calls).toLocaleString()} tok` +
+        (bare == null ? "" : `  $${(bare / u.calls).toFixed(4)}/call priced with no cache`)
+    );
   }
   // A prefix left warm by an earlier run reads back at 10% instead of being
   // written at 125%, so a repeat run prices lower than the first call of a
   // segment ever will. Compare the two models to each other, not to a budget.
   console.log("  (cache writes of 0 mean a previous run left the prefix warm)");
 
+  // When the widths differ the models are the same, so a label naming only the
+  // model would print the same string on both sides of every arrow.
+  const side = (model: string, width: number) =>
+    baselineWidth === candidateWidth ? model : `${model} @${width}px`;
+
   report(
-    { baseline: baselineModel, candidate: candidateModel, pairs },
+    {
+      baseline: side(baselineModel, baselineWidth),
+      candidate: side(candidateModel, candidateWidth),
+      pairs,
+    },
     controlPairs.length
-      ? { baseline: baselineModel, candidate: `${baselineModel} (control)`, pairs: controlPairs }
+      ? {
+          baseline: side(baselineModel, controlWidth),
+          candidate: `${side(baselineModel, controlWidth)} (control)`,
+          pairs: controlPairs,
+        }
       : null
   );
 
@@ -652,6 +780,8 @@ async function main() {
         {
           baselineModel,
           candidateModel,
+          baselineWidth,
+          candidateWidth,
           records: pairs.map((p) => ({ shot: p.shot.id, title: p.shot.title, baseline: p.a, candidate: p.b })),
           control: controlPairs.map((p) => ({ shot: p.shot.id, first: p.a, second: p.b })),
         },

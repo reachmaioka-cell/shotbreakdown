@@ -63,7 +63,7 @@ const THUMB_WIDTH = 640;
  * ride on every per-shot call. So the frame keeps its resolution in storage and
  * only the copy that goes into the request is scaled down.
  */
-const MODEL_FRAME_WIDTH = 768;
+export const MODEL_FRAME_WIDTH = 768;
 const CANDIDATES_PER_SHOT = 5;
 /** Frames sent to the model per shot: first, representative, last. */
 const ANALYSIS_FRAMES = 3;
@@ -136,11 +136,19 @@ async function makeThumbnail(sourcePath: string, outPath: string): Promise<void>
  *
  * Exported because it is the seam between what we store and what we pay for,
  * and a test can hold a real frame either side of it.
+ *
+ * `width` exists so that seam can be moved for a measurement and nothing else:
+ * it defaults to MODEL_FRAME_WIDTH, so every production caller keeps the width
+ * production has always sent, and scripts/model-compare.ts can ask what a
+ * different one buys without changing anything else about the request.
  */
-export async function downscaleForModel(image: {
-  buffer: Buffer;
-  contentType: string;
-}): Promise<{ buffer: Buffer; contentType: string }> {
+export async function downscaleForModel(
+  image: {
+    buffer: Buffer;
+    contentType: string;
+  },
+  width: number = MODEL_FRAME_WIDTH
+): Promise<{ buffer: Buffer; contentType: string }> {
   const dir = await mkdtemp(join(tmpdir(), "sb-model-frame-"));
   try {
     const input = join(dir, "in.jpg");
@@ -152,7 +160,7 @@ export async function downscaleForModel(image: {
       "-i",
       input,
       "-vf",
-      `scale='min(${MODEL_FRAME_WIDTH},iw)':-2`,
+      `scale='min(${Math.round(width)},iw)':-2`,
       "-q:v",
       "3",
       "-y",
@@ -1237,8 +1245,12 @@ export async function runGenerateRecreationGuide(job: ProcessingJob): Promise<Re
  * show a time remap, a freeze, a ramp or a hold. The candidate frames the
  * ingest stage already extracted are spread across each shot, so they are the
  * right sample and cost nothing extra to produce.
+ *
+ * Exported so a measurement can build the breakdown's real input — the same
+ * frames, the same budget, the same motion profiles — instead of a second
+ * implementation that drifts from this one the moment either changes.
  */
-async function loadSegmentFrames(
+export async function loadSegmentFrames(
   admin: Admin,
   shots: {
     id: string;
